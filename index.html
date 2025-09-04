@@ -1,1 +1,274 @@
-src code changed
+Super 👌! Neenga kuduthirukkara JSON structure romba clear ah irukku — options array illa dictionary (object) form la kuduthirukkenga.
+
+Ippdi irukkura JSON base panni naan dynamic form generate + validate + localStorage save + result page la table + charts kodukkuren.
+Plugins: Tailwind + jQuery + DataTables + Chart.js.
+
+
+---
+
+🔹 index.html (Form Page)
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Course Registration</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="js/form.js" defer></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+  <div class="bg-white shadow-lg rounded-xl p-8 w-full max-w-2xl">
+    <h2 class="text-2xl font-bold text-center mb-6">Course Registration Form</h2>
+    <form id="registrationForm" class="space-y-4"></form>
+    <button id="submitBtn" class="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Register</button>
+  </div>
+</body>
+</html>
+
+
+---
+
+🔹 form.js (Dynamic Form + Save)
+
+// JSON
+const formConfig = {
+  "formJSON": [
+    { "label": "Full Name", "type": "text", "id": "name", "required": true },
+    { "label": "Email", "type": "email", "id": "email", "required": true },
+    { "label": "Password", "type": "password", "id": "password", "required": true },
+    { "label": "Phone Number", "type": "number", "id": "phone", "required": true },
+    {
+      "label": "Gender",
+      "type": "radio",
+      "id": "gender",
+      "options": { "male": "Male", "female": "Female", "other": "Other" },
+      "required": true
+    },
+    { "label": "Date of Birth", "type": "date", "id": "dob", "required": true },
+    { "label": "Address", "type": "textarea", "id": "address", "required": false },
+    {
+      "label": "Course",
+      "type": "select",
+      "id": "course",
+      "options": {
+        "html": "HTML", "css": "CSS", "js": "JavaScript",
+        "react": "React", "node": "Node", "python": "Python"
+      },
+      "required": true
+    },
+    {
+      "label": "Experience Level",
+      "type": "select",
+      "id": "experience",
+      "options": {
+        "beginner": "Beginner", "intermediate": "Intermediate", "advanced": "Advanced"
+      },
+      "required": true
+    },
+    {
+      "label": "Skills",
+      "type": "checkbox",
+      "id": "skills",
+      "options": {
+        "problem_solving": "Problem Solving",
+        "teamwork": "Teamwork",
+        "communication": "Communication",
+        "leadership": "Leadership"
+      },
+      "required": false
+    }
+  ]
+};
+
+$(document).ready(function() {
+  const form = $("#registrationForm");
+
+  // Generate form fields dynamically
+  formConfig.formJSON.forEach(field => {
+    let inputEl = "";
+    switch(field.type) {
+      case "text":
+      case "email":
+      case "password":
+      case "number":
+      case "date":
+        inputEl = `<div>
+                     <label class="block font-medium">${field.label}</label>
+                     <input type="${field.type}" id="${field.id}" class="w-full border rounded p-2" ${field.required ? "required" : ""}>
+                   </div>`;
+        break;
+      case "textarea":
+        inputEl = `<div>
+                     <label class="block font-medium">${field.label}</label>
+                     <textarea id="${field.id}" class="w-full border rounded p-2"></textarea>
+                   </div>`;
+        break;
+      case "select":
+        inputEl = `<div>
+                     <label class="block font-medium">${field.label}</label>
+                     <select id="${field.id}" class="w-full border rounded p-2">
+                       ${Object.entries(field.options).map(([key,val]) => `<option value="${val}">${val}</option>`).join("")}
+                     </select>
+                   </div>`;
+        break;
+      case "radio":
+        inputEl = `<div>
+                     <label class="block font-medium">${field.label}</label>
+                     ${Object.entries(field.options).map(([key,val]) => `
+                       <label class="mr-3"><input type="radio" name="${field.id}" value="${val}"> ${val}</label>
+                     `).join("")}
+                   </div>`;
+        break;
+      case "checkbox":
+        inputEl = `<div>
+                     <label class="block font-medium">${field.label}</label>
+                     ${Object.entries(field.options).map(([key,val]) => `
+                       <label class="mr-3"><input type="checkbox" name="${field.id}" value="${val}"> ${val}</label>
+                     `).join("")}
+                   </div>`;
+        break;
+    }
+    form.append(inputEl);
+  });
+
+  // Submit button
+  $("#submitBtn").click(function(e) {
+    e.preventDefault();
+    let data = {};
+    let valid = true;
+
+    formConfig.formJSON.forEach(field => {
+      if (field.type === "radio") {
+        data[field.id] = $(`input[name=${field.id}]:checked`).val() || "";
+      } else if (field.type === "checkbox") {
+        data[field.id] = $(`input[name=${field.id}]:checked`).map(function(){return this.value}).get();
+      } else {
+        data[field.id] = $(`#${field.id}`).val();
+      }
+      if (field.required && (!data[field.id] || data[field.id].length === 0)) valid = false;
+    });
+
+    if (!valid) {
+      alert("⚠️ Please fill all required fields");
+      return;
+    }
+
+    // Save to localStorage
+    let users = JSON.parse(localStorage.getItem("registrations")) || [];
+    users.push(data);
+    localStorage.setItem("registrations", JSON.stringify(users));
+
+    // Redirect
+    window.location.href = "result.html";
+  });
+});
+
+
+---
+
+🔹 result.html (Table + Charts)
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Registration Results</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="js/result.js" defer></script>
+</head>
+<body class="bg-gray-100 p-8">
+  <h2 class="text-3xl font-bold text-center mb-6">Registered Students</h2>
+  
+  <div class="bg-white p-6 shadow rounded-lg">
+    <table id="resultTable" class="display w-full"></table>
+  </div>
+
+  <div class="mt-10 grid grid-cols-1 md:grid-cols-2 gap-8">
+    <div class="bg-white p-6 shadow rounded-lg">
+      <h3 class="font-semibold mb-4">Course Distribution</h3>
+      <canvas id="courseChart"></canvas>
+    </div>
+    <div class="bg-white p-6 shadow rounded-lg">
+      <h3 class="font-semibold mb-4">Experience Levels</h3>
+      <canvas id="experienceChart"></canvas>
+    </div>
+  </div>
+</body>
+</html>
+
+
+---
+
+🔹 result.js (DataTable + Charts)
+
+$(document).ready(function() {
+  let users = JSON.parse(localStorage.getItem("registrations")) || [];
+
+  // DataTable
+  if (users.length > 0) {
+    $("#resultTable").DataTable({
+      data: users,
+      columns: Object.keys(users[0]).map(key => ({ title: key, data: key }))
+    });
+  }
+
+  // Counts for charts
+  let courseCount = {};
+  let experienceCount = {};
+  users.forEach(u => {
+    courseCount[u.course] = (courseCount[u.course] || 0) + 1;
+    experienceCount[u.experience] = (experienceCount[u.experience] || 0) + 1;
+  });
+
+  // Course Chart
+  new Chart(document.getElementById("courseChart"), {
+    type: "pie",
+    data: {
+      labels: Object.keys(courseCount),
+      datasets: [{
+        data: Object.values(courseCount),
+        backgroundColor: ["#3b82f6","#f59e0b","#10b981","#ef4444","#8b5cf6","#06b6d4"]
+      }]
+    }
+  });
+
+  // Experience Chart
+  new Chart(document.getElementById("experienceChart"), {
+    type: "bar",
+    data: {
+      labels: Object.keys(experienceCount),
+      datasets: [{
+        label: "No. of Students",
+        data: Object.values(experienceCount),
+        backgroundColor: "#3b82f6"
+      }]
+    }
+  });
+});
+
+
+---
+
+✅ Output:
+
+Form: Full Name, Email, Password, Phone, Gender, DOB, Address, Course, Experience, Skills
+
+Result Page:
+
+DataTables table (sortable, searchable)
+
+Pie Chart → Course distribution
+
+Bar Chart → Experience distribution
+
+
+
+
+---
+
+👉 Neenga sollunga: Result page la skills (checkbox) distribution kooda separate chart la venumaa?
