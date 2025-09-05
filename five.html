@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AJAX Table Example with Tailwind</title>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center pt-10">
+
+  <h2 class="text-2xl font-bold mb-6 text-gray-700">Users Table from Dummy API</h2>
+
+  <div class="overflow-x-auto shadow-lg rounded-lg w-4/5">
+    <table id="userTable" class="min-w-full bg-white rounded-lg">
+      <thead class="bg-gray-200 text-gray-700 uppercase text-sm">
+        <tr>
+          <th class="py-3 px-6 text-left">ID</th>
+          <th class="py-3 px-6 text-left">Name</th>
+          <th class="py-3 px-6 text-left">Email</th>
+          <th class="py-3 px-6 text-left">City</th>
+        </tr>
+      </thead>
+      <tbody class="text-gray-600 text-sm divide-y divide-gray-200">
+        <!-- Data from API will come here -->
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    $(document).ready(function(){
+      $.ajax({
+        url: "https://jsonplaceholder.typicode.com/users", // Dummy API
+        type: "GET",
+        success: function(data){
+          let rows = "";
+          $.each(data, function(index, user){
+            rows += `
+              <tr class="hover:bg-gray-100 transition">
+                <td class="py-3 px-6">${user.id}</td>
+                <td class="py-3 px-6">${user.name}</td>
+                <td class="py-3 px-6">${user.email}</td>
+                <td class="py-3 px-6">${user.address.city}</td>
+              </tr>
+            `;
+          });
+          $("#userTable tbody").html(rows);
+        },
+        error: function(){
+          alert("Error while fetching data!");
+        }
+      });
+    });
+  </script>
+
+</body>
+</html>
