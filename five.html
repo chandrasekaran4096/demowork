@@ -1,56 +1,247 @@
+👌 sari — இப்போ நாம jQuery use பண்ணி இதே flow எழுதலாம்.
+நீங்க கேட்டது போல:
+
+index.html → Username form → cookies store → redirect
+
+form.html → big form → localStorage → table (edit / delete)
+
+Cookie expiry check → இல்லனா redirect back
+
+
+
+---
+
+File Structure
+
+project/
+│── index.html
+│── form.html
+│── script.js
+
+
+---
+
+index.html
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AJAX Table Example with Tailwind</title>
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <title>Login Page</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 </head>
-<body class="bg-gray-100 min-h-screen flex flex-col items-center pt-10">
-
-  <h2 class="text-2xl font-bold mb-6 text-gray-700">Users Table from Dummy API</h2>
-
-  <div class="overflow-x-auto shadow-lg rounded-lg w-4/5">
-    <table id="userTable" class="min-w-full bg-white rounded-lg">
-      <thead class="bg-gray-200 text-gray-700 uppercase text-sm">
-        <tr>
-          <th class="py-3 px-6 text-left">ID</th>
-          <th class="py-3 px-6 text-left">Name</th>
-          <th class="py-3 px-6 text-left">Email</th>
-          <th class="py-3 px-6 text-left">City</th>
-        </tr>
-      </thead>
-      <tbody class="text-gray-600 text-sm divide-y divide-gray-200">
-        <!-- Data from API will come here -->
-      </tbody>
-    </table>
+<body class="bg-gradient-to-r from-indigo-500 to-purple-600 min-h-screen flex items-center justify-center">
+  <div class="bg-white shadow-xl rounded-2xl p-8 w-96">
+    <h2 class="text-2xl font-bold text-center text-indigo-600 mb-6">Welcome</h2>
+    <form id="loginForm" class="space-y-4">
+      <input type="text" id="username" placeholder="Enter username" required 
+             class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+      <button type="submit" 
+              class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 rounded-lg shadow">
+        Submit
+      </button>
+    </form>
   </div>
 
-  <script>
-    $(document).ready(function(){
-      $.ajax({
-        url: "https://jsonplaceholder.typicode.com/users", // Dummy API
-        type: "GET",
-        success: function(data){
-          let rows = "";
-          $.each(data, function(index, user){
-            rows += `
-              <tr class="hover:bg-gray-100 transition">
-                <td class="py-3 px-6">${user.id}</td>
-                <td class="py-3 px-6">${user.name}</td>
-                <td class="py-3 px-6">${user.email}</td>
-                <td class="py-3 px-6">${user.address.city}</td>
-              </tr>
-            `;
-          });
-          $("#userTable tbody").html(rows);
-        },
-        error: function(){
-          alert("Error while fetching data!");
-        }
-      });
-    });
-  </script>
-
+  <script src="script.js"></script>
 </body>
 </html>
+
+
+---
+
+form.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>User Form</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-10">
+
+  <div class="bg-white shadow-lg rounded-2xl p-8 w-full max-w-2xl">
+    <h2 class="text-2xl font-bold text-indigo-600 mb-6 text-center">User Registration</h2>
+
+    <form id="userForm" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <input type="text" id="name" placeholder="Full Name" required 
+             class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+      <input type="email" id="email" placeholder="Email" required 
+             class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+      <input type="number" id="phone" placeholder="Phone" required 
+             class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+      <input type="date" id="dob" required 
+             class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+      <select id="gender" required 
+              class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none">
+        <option value="">Select Gender</option>
+        <option value="Male">Male</option>
+        <option value="Female">Female</option>
+      </select>
+      <textarea id="address" placeholder="Address"
+                class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none col-span-2"></textarea>
+      <button type="submit" 
+              class="col-span-2 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 rounded-lg shadow">
+        Save
+      </button>
+    </form>
+  </div>
+
+  <div class="bg-white shadow-lg rounded-2xl p-8 w-full max-w-4xl mt-10">
+    <h3 class="text-xl font-bold text-indigo-600 mb-4">Stored Data</h3>
+    <div class="overflow-x-auto">
+      <table class="min-w-full border border-gray-300 text-sm">
+        <thead class="bg-indigo-500 text-white">
+          <tr>
+            <th class="p-2 border">Name</th>
+            <th class="p-2 border">Email</th>
+            <th class="p-2 border">Phone</th>
+            <th class="p-2 border">DOB</th>
+            <th class="p-2 border">Gender</th>
+            <th class="p-2 border">Address</th>
+            <th class="p-2 border">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="dataTableBody" class="text-center"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
+
+
+---
+
+script.js (jQuery version)
+
+// --- Cookies Helper Functions ---
+function setCookie(name, value, minutes) {
+  const d = new Date();
+  d.setTime(d.getTime() + (minutes * 60 * 1000));
+  document.cookie = `${name}=${value};expires=${d.toUTCString()};path=/`;
+}
+
+function getCookie(name) {
+  const cname = name + "=";
+  const decodedCookie = decodeURIComponent(document.cookie);
+  const ca = decodedCookie.split(';');
+  for (let c of ca) {
+    c = c.trim();
+    if (c.indexOf(cname) === 0) {
+      return c.substring(cname.length, c.length);
+    }
+  }
+  return "";
+}
+
+$(document).ready(function () {
+  // --- Page 1 (index.html) ---
+  $("#loginForm").on("submit", function (e) {
+    e.preventDefault();
+    let username = $("#username").val();
+    if (username.trim() !== "") {
+      setCookie("username", username, 1); // 1 minute expiry
+      window.location.href = "form.html";
+    }
+  });
+
+  // --- Page 2 (form.html) ---
+  if ($("#userForm").length) {
+    let user = getCookie("username");
+    if (!user) {
+      alert("Session expired! Please login again.");
+      window.location.href = "index.html";
+    }
+
+    // Load Table Data
+    function loadTable() {
+      let users = JSON.parse(localStorage.getItem("users")) || [];
+      $("#dataTableBody").empty();
+      $.each(users, function (index, u) {
+        let row = `
+          <tr class="border-b hover:bg-gray-100">
+            <td class="p-2 border">${u.name}</td>
+            <td class="p-2 border">${u.email}</td>
+            <td class="p-2 border">${u.phone}</td>
+            <td class="p-2 border">${u.dob}</td>
+            <td class="p-2 border">${u.gender}</td>
+            <td class="p-2 border">${u.address}</td>
+            <td class="p-2 border space-x-2">
+              <button class="editBtn bg-yellow-400 hover:bg-yellow-500 text-white px-2 py-1 rounded" data-index="${index}">Edit</button>
+              <button class="deleteBtn bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded" data-index="${index}">Delete</button>
+            </td>
+          </tr>
+        `;
+        $("#dataTableBody").append(row);
+      });
+    }
+
+    // Form Submit
+    $("#userForm").on("submit", function (e) {
+      e.preventDefault();
+      let users = JSON.parse(localStorage.getItem("users")) || [];
+      let newUser = {
+        name: $("#name").val(),
+        email: $("#email").val(),
+        phone: $("#phone").val(),
+        dob: $("#dob").val(),
+        gender: $("#gender").val(),
+        address: $("#address").val()
+      };
+      users.push(newUser);
+      localStorage.setItem("users", JSON.stringify(users));
+      $("#userForm")[0].reset();
+      loadTable();
+    });
+
+    // Delete Button
+    $(document).on("click", ".deleteBtn", function () {
+      let index = $(this).data("index");
+      let users = JSON.parse(localStorage.getItem("users")) || [];
+      users.splice(index, 1);
+      localStorage.setItem("users", JSON.stringify(users));
+      loadTable();
+    });
+
+    // Edit Button
+    $(document).on("click", ".editBtn", function () {
+      let index = $(this).data("index");
+      let users = JSON.parse(localStorage.getItem("users")) || [];
+      let u = users[index];
+
+      $("#name").val(u.name);
+      $("#email").val(u.email);
+      $("#phone").val(u.phone);
+      $("#dob").val(u.dob);
+      $("#gender").val(u.gender);
+      $("#address").val(u.address);
+
+      users.splice(index, 1); // remove old
+      localStorage.setItem("users", JSON.stringify(users));
+      loadTable();
+    });
+
+    loadTable();
+  }
+});
+
+
+---
+
+✅ இப்போ எல்லாமே jQuery + Tailwind
+
+Form submit, table render, edit/delete → எல்லாம் jQuery event handlers
+
+Style Tailwindலே maintain பண்ணிருக்கேன்
+
+
+
+---
+
+👉 Cookie expiry நான் 1 minute fix பண்ணிருக்கேன். நீங்க வேணும்னா இதை 5 mins மாத்தி வைக்கலாமா?
+
