@@ -1,361 +1,189 @@
-Perfect 👇 here’s the viewUserDetails() function that dynamically handles both Customers and Restaurant Owners, including cases where they have 0 or more orders/restaurants, using SweetAlert2 for the modal display:
+Great 👍 Let’s start with the frontend (JS) part for the Block/Unblock user feature.
+
+Below is the jQuery code you can add inside your existing superAdmin.js file (right after the renderUsersTable() function).
 
 
 ---
 
-✅ JavaScript: viewUserDetails()
+✅ Frontend Code (jQuery + SweetAlert)
 
-function viewUserDetails(userId) {
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "viewUser", userId: userId },
-    success: function (response) {
-      if (!response.user) {
-        Swal.fire("Error", "User details not found.", "error");
-        return;
-      }
+function toggleUserStatus(userId, currentStatus) {
+    let newStatus = currentStatus === "Active" ? "Blocked" : "Active";
+    let confirmMsg = currentStatus === "Active"
+        ? "Are you sure you want to block this user?"
+        : "Are you sure you want to unblock this user?";
 
-      let user = response.user;
-      let title = `<h4>${user.name}</h4>`;
-      let userInfo = `
-        <p><strong>Email:</strong> ${user.email}</p>
-        <p><strong>Phone:</strong> ${user.phone}</p>
-        <p><strong>Role:</strong> ${user.role}</p>
-        <p><strong>Status:</strong> ${user.status}</p>
-        <p><strong>Joined On:</strong> ${user.createdAt}</p>
-      `;
-
-      let content = userInfo;
-
-      // If Customer → show Orders
-      if (user.role === "Customer") {
-        if (response.orders && response.orders.length > 0) {
-          let ordersHtml = `
-            <h5 class="mt-3">Recent Orders</h5>
-            <table class="table table-bordered mt-2">
-              <thead><tr><th>ID</th><th>Restaurant</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead>
-              <tbody>
-                ${response.orders.map(o => `
-                  <tr>
-                    <td>${o.orderId}</td>
-                    <td>${o.restaurantName}</td>
-                    <td>₹${o.amount.toFixed(2)}</td>
-                    <td>${o.date}</td>
-                    <td>${o.status}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>`;
-          content += ordersHtml;
-        } else {
-          content += `<p class="text-muted mt-3">No orders found for this customer.</p>`;
+    Swal.fire({
+        title: "Confirm Action",
+        text: confirmMsg,
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonColor: "#3085d6",
+        cancelButtonColor: "#d33",
+        confirmButtonText: "Yes, proceed"
+    }).then((result) => {
+        if (result.isConfirmed) {
+            $.ajax({
+                url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
+                method: "POST",
+                data: {
+                    action: "toggleUserStatus",
+                    userId: userId,
+                    currentStatus: currentStatus
+                },
+                success: function(response) {
+                    if (response.success) {
+                        Swal.fire("Success!", response.message, "success");
+                        setTimeout(() => loadUsers(), 1000);
+                    } else {
+                        Swal.fire("Error", response.message || "Something went wrong", "error");
+                    }
+                },
+                error: function() {
+                    Swal.fire("Error", "Failed to update user status.", "error");
+                }
+            });
         }
-      }
-
-      // If Restaurant Owner → show Restaurants
-      else if (user.role === "Restaurant") {
-        if (response.restaurants && response.restaurants.length > 0) {
-          let restHtml = `
-            <h5 class="mt-3">Owned Restaurants</h5>
-            <table class="table table-bordered mt-2">
-              <thead><tr><th>ID</th><th>Name</th><th>Total Orders</th><th>Revenue (₹)</th></tr></thead>
-              <tbody>
-                ${response.restaurants.map(r => `
-                  <tr>
-                    <td>${r.restaurantId}</td>
-                    <td>${r.restaurantName}</td>
-                    <td>${r.totalOrders}</td>
-                    <td>${r.totalRevenue.toFixed(2)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>`;
-          content += restHtml;
-        } else {
-          content += `<p class="text-muted mt-3">No restaurants found for this owner.</p>`;
-        }
-      }
-
-      Swal.fire({
-        title: title,
-        html: content,
-        width: 700,
-        confirmButtonText: "Close",
-        showCloseButton: true
-      });
-    },
-    error: function () {
-      Swal.fire("Error", "Failed to fetch user details.", "error");
-    }
-  });
+    });
 }
 
 
 ---
 
-⚙️ Behavior Summary
+🧠 What Happens Here
 
-Role	Condition	Result
+1. When admin clicks the Block/Unblock button,
+this function is triggered with userId and currentStatus.
 
-Customer	Has orders	Shows user info + order table
-Customer	No orders	Shows “No orders found”
-Restaurant	Has restaurants	Shows user info + restaurant table
-Restaurant	No restaurants	Shows “No restaurants found”
-Any	Not found	SweetAlert error
+
+2. A SweetAlert confirmation box appears.
+
+
+3. On confirmation → an AJAX POST request is sent to servlet.
+
+
+4. Servlet updates DB (we’ll handle next).
+
+
+5. On success → SweetAlert “Success!” + table refresh.
+
 
 
 
 ---
 
-Would you like me to now create the Servlet → Service → DAO backend flow (viewUser action) that returns the JSON response for this?
+Would you like me to proceed with the Servlet (AdminDashboardServlet) implementation next?
 
+Perfect 👌 — here’s the Servlet part for the Block/Unblock user action in your existing
+AdminDashboardServlet.java.
 
-Excellent 👍 — here’s the complete backend flow (Servlet → Service → DAO → Model) for the viewUser action, matching your architecture and SweetAlert UI design.
+You’ll place this inside your main doPost() method (since the frontend sends a POST request).
 
 
 ---
 
-🧩 1️⃣ Servlet — AdminDashboardServlet.java
+✅ AdminDashboardServlet.java (POST handling)
 
-@WebServlet("/AdminDashboardServlet")
-public class AdminDashboardServlet extends HttpServlet {
-    private AdminService adminService = new AdminService();
+@Override
+protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    response.setContentType("application/json");
+    PrintWriter out = response.getWriter();
+    Gson gson = new Gson();
 
-    @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response)
-            throws ServletException, IOException {
+    String action = request.getParameter("action");
+    Map<String, Object> jsonResponse = new HashMap<>();
 
-        String action = request.getParameter("action");
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-        Gson gson = new Gson();
+    try {
+        if ("toggleUserStatus".equals(action)) {
+            int userId = Integer.parseInt(request.getParameter("userId"));
+            String currentStatus = request.getParameter("currentStatus");
 
-        try {
-            if ("viewUser".equals(action)) {
-                int userId = Integer.parseInt(request.getParameter("userId"));
-                Map<String, Object> result = adminService.getUserDetails(userId);
-                response.getWriter().write(gson.toJson(result));
+            boolean updated = adminService.toggleUserStatus(userId, currentStatus);
+
+            if (updated) {
+                jsonResponse.put("success", true);
+                jsonResponse.put("message", currentStatus.equals("Active")
+                        ? "User has been blocked successfully."
+                        : "User has been unblocked successfully.");
+            } else {
+                jsonResponse.put("success", false);
+                jsonResponse.put("message", "Failed to update user status.");
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.getWriter().write("{\"error\":\"Something went wrong\"}");
         }
+
+    } catch (Exception e) {
+        e.printStackTrace();
+        jsonResponse.put("success", false);
+        jsonResponse.put("message", "An error occurred: " + e.getMessage());
+    }
+
+    out.print(gson.toJson(jsonResponse));
+    out.flush();
+}
+
+
+---
+
+✅ AdminService.java
+
+Add this function:
+
+public boolean toggleUserStatus(int userId, String currentStatus) {
+    String newStatus = currentStatus.equals("Active") ? "Blocked" : "Active";
+    return adminDao.updateUserStatus(userId, newStatus);
+}
+
+
+---
+
+✅ AdminDao.java
+
+Add the actual DB update logic:
+
+public boolean updateUserStatus(int userId, String newStatus) {
+    String query = "UPDATE users SET status = ? WHERE user_id = ?";
+    try (Connection conn = DBConnection.getConnection();
+         PreparedStatement ps = conn.prepareStatement(query)) {
+        ps.setString(1, newStatus);
+        ps.setInt(2, userId);
+        return ps.executeUpdate() > 0;
+    } catch (SQLException e) {
+        e.printStackTrace();
+        return false;
     }
 }
 
 
 ---
 
-⚙️ 2️⃣ Service — AdminService.java
+✅ SQL Table Reference
 
-public class AdminService {
-    private AdminDAO adminDAO = new AdminDAO();
+Make sure your users table contains a column:
 
-    public Map<String, Object> getUserDetails(int userId) {
-        Map<String, Object> response = new HashMap<>();
-
-        User user = adminDAO.fetchUserById(userId);
-        if (user == null) {
-            return response;
-        }
-
-        response.put("user", user);
-
-        if ("Customer".equalsIgnoreCase(user.getRole())) {
-            List<Order> orders = adminDAO.fetchOrdersByUser(userId);
-            response.put("orders", orders);
-        } else if ("Restaurant".equalsIgnoreCase(user.getRole())) {
-            List<Restaurant> restaurants = adminDAO.fetchRestaurantsByOwner(userId);
-            response.put("restaurants", restaurants);
-        }
-
-        return response;
-    }
-}
+status VARCHAR(10) DEFAULT 'Active'
 
 
 ---
 
-🧠 3️⃣ DAO — AdminDAO.java
+🧠 Flow Summary
 
-public class AdminDAO {
+1. Admin clicks Block/Unblock → AJAX sends userId + currentStatus.
 
-    public User fetchUserById(int userId) {
-        User user = null;
-        String sql = "SELECT * FROM food.M_D_USERS WHERE userid = ?";
 
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+2. Servlet → calls AdminService.toggleUserStatus().
 
-            ps.setInt(1, userId);
-            ResultSet rs = ps.executeQuery();
 
-            if (rs.next()) {
-                user = new User();
-                user.setUserId(rs.getInt("userid"));
-                user.setName(rs.getString("name"));
-                user.setEmail(rs.getString("email"));
-                user.setPhone(rs.getString("phonenumber"));
-                user.setRole(rs.getString("role"));
-                user.setStatus(rs.getString("status"));
-                user.setCreatedAt(rs.getTimestamp("created_at"));
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return user;
-    }
+3. Service → calls AdminDao.updateUserStatus().
 
-    public List<Order> fetchOrdersByUser(int userId) {
-        List<Order> orders = new ArrayList<>();
-        String sql = "SELECT o.order_id, r.name AS restaurant_name, o.amount, o.order_date, o.status " +
-                     "FROM food.M_D_ORDERS o " +
-                     "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
-                     "WHERE o.customer_id = ? ORDER BY o.order_date DESC LIMIT 5";
 
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+4. DAO → updates DB, returns success/failure.
 
-            ps.setInt(1, userId);
-            ResultSet rs = ps.executeQuery();
 
-            while (rs.next()) {
-                Order order = new Order();
-                order.setOrderId(rs.getInt("order_id"));
-                order.setRestaurantName(rs.getString("restaurant_name"));
-                order.setAmount(rs.getDouble("amount"));
-                order.setOrderDate(rs.getDate("order_date"));
-                order.setStatus(rs.getString("status"));
-                orders.add(order);
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
+5. Servlet sends back JSON → SweetAlert shows success and reloads table.
 
-        return orders;
-    }
 
-    public List<Restaurant> fetchRestaurantsByOwner(int userId) {
-        List<Restaurant> restaurants = new ArrayList<>();
-        String sql = "SELECT restaurant_id, name AS restaurant_name, total_orders, total_revenue " +
-                     "FROM food.M_D_RESTAURANT WHERE owner_id = ?";
-
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-
-            ps.setInt(1, userId);
-            ResultSet rs = ps.executeQuery();
-
-            while (rs.next()) {
-                Restaurant r = new Restaurant();
-                r.setRestaurantId(rs.getInt("restaurant_id"));
-                r.setRestaurantName(rs.getString("restaurant_name"));
-                r.setTotalOrders(rs.getInt("total_orders"));
-                r.setTotalRevenue(rs.getDouble("total_revenue"));
-                restaurants.add(r);
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-
-        return restaurants;
-    }
-}
 
 
 ---
 
-🧾 4️⃣ Model Classes (Simple POJOs)
-
-User.java
-
-public class User {
-    private int userId;
-    private String name;
-    private String email;
-    private String phone;
-    private String role;
-    private String status;
-    private Timestamp createdAt;
-
-    // Getters and Setters
-}
-
-Order.java
-
-public class Order {
-    private int orderId;
-    private String restaurantName;
-    private double amount;
-    private Date orderDate;
-    private String status;
-
-    // Getters and Setters
-}
-
-Restaurant.java
-
-public class Restaurant {
-    private int restaurantId;
-    private String restaurantName;
-    private int totalOrders;
-    private double totalRevenue;
-
-    // Getters and Setters
-}
-
-
----
-
-🧩 JSON Response Example
-
-If Customer:
-
-{
-  "user": {
-    "userId": 5,
-    "name": "Karthik",
-    "role": "Customer",
-    "status": "Active",
-    "email": "karthik@gmail.com",
-    "phone": "9876543210",
-    "createdAt": "2025-10-21T14:20:00"
-  },
-  "orders": [
-    {
-      "orderId": 201,
-      "restaurantName": "Annapoorna",
-      "amount": 250.75,
-      "orderDate": "2025-10-22",
-      "status": "Delivered"
-    }
-  ]
-}
-
-If Restaurant Owner:
-
-{
-  "user": {
-    "userId": 7,
-    "name": "Rajesh",
-    "role": "Restaurant",
-    "status": "Active",
-    "email": "rajesh@gmail.com",
-    "phone": "9000000001",
-    "createdAt": "2025-10-15T12:10:00"
-  },
-  "restaurants": [
-    {
-      "restaurantId": 10,
-      "restaurantName": "Spice Villa",
-      "totalOrders": 120,
-      "totalRevenue": 45000.75
-    }
-  ]
-}
-
-
----
-
-Would you like me to now show the SQL table structure (M_D_USERS, M_D_RESTAURANT, M_D_ORDERS) for this flow — so you can verify column names and constraints before testing?
+Would you like to move next to Delete User functionality?
