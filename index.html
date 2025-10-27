@@ -1,313 +1,85 @@
+function loadUsers() {
+    $("#content-area").html("<h4 class='text-center mt-4'>Loading users...</h4>");
 
-Ok 👍 naan unga project ku step by step implementation clear ah explain panren.
-Neenga follow panna easy ah irukkum.
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
+        method: "GET",
+        data: { action: "users" },
+        success: function(response) {
+            console.log("Users =>", response.users);
+            if (response.users && response.users.length > 0) {
+                renderUsersTable(response.users);
+            } else {
+                $("#content-area").html("<p class='text-center mt-4 text-muted'>No users found.</p>");
+            }
+        },
+        error: function() {
+            $("#content-area").html("<p class='text-center mt-4 text-danger'>Failed to load users.</p>");
+        }
+    });
+}
 
+function renderUsersTable(users) {
+    let html = `
+    <div class="container mt-4">
+        <h3 class="mb-4">User Management</h3>
+        <table id="usersTable" class="table table-striped table-bordered">
+            <thead class="table-dark">
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
 
----
+    users.forEach(u => {
+        let statusBadge = u.status === "Active"
+            ? `<span class="badge bg-success">Active</span>`
+            : `<span class="badge bg-danger">Blocked</span>`;
 
-🔹 Step 1: Project Structure create pannunga
-
-Ungal system la oru folder create pannunga (e.g. CourseRegistration/).
-Adhula files & folders:
-
-CourseRegistration/
-│── index.html        (Form page)
-│── result.html       (Table + Charts page)
-│── js/
-│    ├── form.js
-│    ├── result.js
-
-
----
-
-🔹 Step 2: index.html (Form Page UI)
-
-👉 This is the page where the registration form will be generated dynamically using JSON.
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Course Registration</title>
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- jQuery -->
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <!-- Our JS -->
-  <script src="js/form.js" defer></script>
-</head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
-  <div class="bg-white shadow-lg rounded-xl p-8 w-full max-w-2xl">
-    <h2 class="text-2xl font-bold text-center mb-6">Course Registration Form</h2>
-    <form id="registrationForm" class="space-y-4"></form>
-    <button id="submitBtn" class="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Register</button>
-  </div>
-</body>
-</html>
-
-
----
-
-🔹 Step 3: form.js (Generate Form + Validation + Store)
-
-👉 This script will generate fields based on JSON, validate them, and save in localStorage.
-
-// JSON config (form fields)
-const formConfig = {
-  "formJSON": [
-    { "label": "Full Name", "type": "text", "id": "name", "required": true },
-    { "label": "Email", "type": "email", "id": "email", "required": true },
-    { "label": "Password", "type": "password", "id": "password", "required": true },
-    { "label": "Phone Number", "type": "number", "id": "phone", "required": true },
-    {
-      "label": "Gender",
-      "type": "radio",
-      "id": "gender",
-      "options": { "male": "Male", "female": "Female", "other": "Other" },
-      "required": true
-    },
-    { "label": "Date of Birth", "type": "date", "id": "dob", "required": true },
-    { "label": "Address", "type": "textarea", "id": "address", "required": false },
-    {
-      "label": "Course",
-      "type": "select",
-      "id": "course",
-      "options": {
-        "html": "HTML", "css": "CSS", "js": "JavaScript",
-        "react": "React", "node": "Node", "python": "Python"
-      },
-      "required": true
-    },
-    {
-      "label": "Experience Level",
-      "type": "select",
-      "id": "experience",
-      "options": {
-        "beginner": "Beginner", "intermediate": "Intermediate", "advanced": "Advanced"
-      },
-      "required": true
-    },
-    {
-      "label": "Skills",
-      "type": "checkbox",
-      "id": "skills",
-      "options": {
-        "problem_solving": "Problem Solving",
-        "teamwork": "Teamwork",
-        "communication": "Communication",
-        "leadership": "Leadership"
-      },
-      "required": false
-    }
-  ]
-};
-
-$(document).ready(function() {
-  const form = $("#registrationForm");
-
-  // Generate form dynamically
-  formConfig.formJSON.forEach(field => {
-    let inputEl = "";
-    switch(field.type) {
-      case "text":
-      case "email":
-      case "password":
-      case "number":
-      case "date":
-        inputEl = `<div>
-          <label class="block font-medium">${field.label}</label>
-          <input type="${field.type}" id="${field.id}" class="w-full border rounded p-2" ${field.required ? "required" : ""}>
-        </div>`;
-        break;
-
-      case "textarea":
-        inputEl = `<div>
-          <label class="block font-medium">${field.label}</label>
-          <textarea id="${field.id}" class="w-full border rounded p-2"></textarea>
-        </div>`;
-        break;
-
-      case "select":
-        inputEl = `<div>
-          <label class="block font-medium">${field.label}</label>
-          <select id="${field.id}" class="w-full border rounded p-2">
-            ${Object.entries(field.options).map(([key,val]) => `<option value="${val}">${val}</option>`).join("")}
-          </select>
-        </div>`;
-        break;
-
-      case "radio":
-        inputEl = `<div>
-          <label class="block font-medium">${field.label}</label>
-          ${Object.entries(field.options).map(([key,val]) => `
-            <label class="mr-3"><input type="radio" name="${field.id}" value="${val}"> ${val}</label>
-          `).join("")}
-        </div>`;
-        break;
-
-      case "checkbox":
-        inputEl = `<div>
-          <label class="block font-medium">${field.label}</label>
-          ${Object.entries(field.options).map(([key,val]) => `
-            <label class="mr-3"><input type="checkbox" name="${field.id}" value="${val}"> ${val}</label>
-          `).join("")}
-        </div>`;
-        break;
-    }
-    form.append(inputEl);
-  });
-
-  // Handle Submit
-  $("#submitBtn").click(function(e) {
-    e.preventDefault();
-    let data = {};
-    let valid = true;
-
-    formConfig.formJSON.forEach(field => {
-      if (field.type === "radio") {
-        data[field.id] = $(`input[name=${field.id}]:checked`).val() || "";
-      } else if (field.type === "checkbox") {
-        data[field.id] = $(`input[name=${field.id}]:checked`).map(function(){return this.value}).get();
-      } else {
-        data[field.id] = $(`#${field.id}`).val();
-      }
-      if (field.required && (!data[field.id] || data[field.id].length === 0)) valid = false;
+        html += `
+            <tr>
+                <td>${u.userid}</td>
+                <td>${u.name}</td>
+                <td>${u.email}</td>
+                <td>${u.phonenumber}</td>
+                <td>${u.role}</td>
+                <td>${statusBadge}</td>
+                <td>${u.created_at}</td>
+                <td>
+                    <button class="btn btn-sm btn-info me-1 view-user" data-id="${u.userid}">View</button>
+                    <button class="btn btn-sm btn-warning me-1 toggle-user" data-id="${u.userid}" data-status="${u.status}">
+                        ${u.status === "Active" ? "Block" : "Unblock"}
+                    </button>
+                    <button class="btn btn-sm btn-danger delete-user" data-id="${u.userid}">Delete</button>
+                </td>
+            </tr>
+        `;
     });
 
-    if (!valid) {
-      alert("⚠️ Please fill all required fields");
-      return;
+    html += `</tbody></table></div>`;
+
+    $("#content-area").html(html);
+
+    if ($.fn.DataTable) {
+        $("#usersTable").DataTable({
+            pageLength: 10,
+            responsive: true,
+            destroy: true
+        });
     }
 
-    // Save in localStorage
-    let users = JSON.parse(localStorage.getItem("registrations")) || [];
-    users.push(data);
-    localStorage.setItem("registrations", JSON.stringify(users));
-
-    // Redirect
-    window.location.href = "result.html";
-  });
-});
+    $(".view-user").click(function() { viewUserDetails($(this).data("id")); });
+    $(".toggle-user").click(function() { toggleUserStatus($(this).data("id"), $(this).data("status")); });
+    $(".delete-user").click(function() { deleteUser($(this).data("id")); });
+}
 
 
----
-
-🔹 Step 4: result.html (Table + Charts)
-
-👉 After form submission, user data will be displayed here.
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Registration Results</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="js/result.js" defer></script>
-</head>
-<body class="bg-gray-100 p-8">
-  <h2 class="text-3xl font-bold text-center mb-6">Registered Students</h2>
-  
-  <!-- Table -->
-  <div class="bg-white p-6 shadow rounded-lg">
-    <table id="resultTable" class="display w-full"></table>
-  </div>
-
-  <!-- Charts -->
-  <div class="mt-10 grid grid-cols-1 md:grid-cols-2 gap-8">
-    <div class="bg-white p-6 shadow rounded-lg">
-      <h3 class="font-semibold mb-4">Course Distribution</h3>
-      <canvas id="courseChart"></canvas>
-    </div>
-    <div class="bg-white p-6 shadow rounded-lg">
-      <h3 class="font-semibold mb-4">Experience Levels</h3>
-      <canvas id="experienceChart"></canvas>
-    </div>
-  </div>
-</body>
-</html>
-
-
----
-
-🔹 Step 5: result.js (Show Data + Charts)
-
-👉 Fetch from localStorage → show in DataTable + visualize with Chart.js.
-
-$(document).ready(function() {
-  let users = JSON.parse(localStorage.getItem("registrations")) || [];
-
-  // DataTable
-  if (users.length > 0) {
-    $("#resultTable").DataTable({
-      data: users,
-      columns: Object.keys(users[0]).map(key => ({ title: key, data: key }))
-    });
-  }
-
-  // Chart Data
-  let courseCount = {};
-  let experienceCount = {};
-
-  users.forEach(u => {
-    courseCount[u.course] = (courseCount[u.course] || 0) + 1;
-    experienceCount[u.experience] = (experienceCount[u.experience] || 0) + 1;
-  });
-
-  // Course Chart
-  new Chart(document.getElementById("courseChart"), {
-    type: "pie",
-    data: {
-      labels: Object.keys(courseCount),
-      datasets: [{
-        data: Object.values(courseCount),
-        backgroundColor: ["#3b82f6","#f59e0b","#10b981","#ef4444","#8b5cf6","#06b6d4"]
-      }]
-    }
-  });
-
-  // Experience Chart
-  new Chart(document.getElementById("experienceChart"), {
-    type: "bar",
-    data: {
-      labels: Object.keys(experienceCount),
-      datasets: [{
-        label: "No. of Students",
-        data: Object.values(experienceCount),
-        backgroundColor: "#3b82f6"
-      }]
-    }
-  });
-});
-
-
----
-
-🔹 Step 6: Run the Project
-
-1. Save all files.
-
-
-2. Open index.html in browser.
-
-
-3. Fill the form → click Register.
-
-
-4. You will be redirected to result.html.
-
-
-5. Table + Charts will show stored data.
-
-
-
-
----
-
-✅ Intha step by step implementation panna, unga course registration system complete ah set aayidum.
-
-👉 Neenga sollunga — naan Skills (checkbox) distribution chart kooda add pannanumaa result page la?
-
+after clicking user we called above functions and we got a users now we need to implement after click view
