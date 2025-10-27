@@ -1,85 +1,361 @@
-function loadUsers() {
-    $("#content-area").html("<h4 class='text-center mt-4'>Loading users...</h4>");
+Perfect 👇 here’s the viewUserDetails() function that dynamically handles both Customers and Restaurant Owners, including cases where they have 0 or more orders/restaurants, using SweetAlert2 for the modal display:
 
-    $.ajax({
-        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-        method: "GET",
-        data: { action: "users" },
-        success: function(response) {
-            console.log("Users =>", response.users);
-            if (response.users && response.users.length > 0) {
-                renderUsersTable(response.users);
-            } else {
-                $("#content-area").html("<p class='text-center mt-4 text-muted'>No users found.</p>");
-            }
-        },
-        error: function() {
-            $("#content-area").html("<p class='text-center mt-4 text-danger'>Failed to load users.</p>");
+
+---
+
+✅ JavaScript: viewUserDetails()
+
+function viewUserDetails(userId) {
+  $.ajax({
+    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
+    method: "GET",
+    data: { action: "viewUser", userId: userId },
+    success: function (response) {
+      if (!response.user) {
+        Swal.fire("Error", "User details not found.", "error");
+        return;
+      }
+
+      let user = response.user;
+      let title = `<h4>${user.name}</h4>`;
+      let userInfo = `
+        <p><strong>Email:</strong> ${user.email}</p>
+        <p><strong>Phone:</strong> ${user.phone}</p>
+        <p><strong>Role:</strong> ${user.role}</p>
+        <p><strong>Status:</strong> ${user.status}</p>
+        <p><strong>Joined On:</strong> ${user.createdAt}</p>
+      `;
+
+      let content = userInfo;
+
+      // If Customer → show Orders
+      if (user.role === "Customer") {
+        if (response.orders && response.orders.length > 0) {
+          let ordersHtml = `
+            <h5 class="mt-3">Recent Orders</h5>
+            <table class="table table-bordered mt-2">
+              <thead><tr><th>ID</th><th>Restaurant</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead>
+              <tbody>
+                ${response.orders.map(o => `
+                  <tr>
+                    <td>${o.orderId}</td>
+                    <td>${o.restaurantName}</td>
+                    <td>₹${o.amount.toFixed(2)}</td>
+                    <td>${o.date}</td>
+                    <td>${o.status}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`;
+          content += ordersHtml;
+        } else {
+          content += `<p class="text-muted mt-3">No orders found for this customer.</p>`;
         }
-    });
+      }
+
+      // If Restaurant Owner → show Restaurants
+      else if (user.role === "Restaurant") {
+        if (response.restaurants && response.restaurants.length > 0) {
+          let restHtml = `
+            <h5 class="mt-3">Owned Restaurants</h5>
+            <table class="table table-bordered mt-2">
+              <thead><tr><th>ID</th><th>Name</th><th>Total Orders</th><th>Revenue (₹)</th></tr></thead>
+              <tbody>
+                ${response.restaurants.map(r => `
+                  <tr>
+                    <td>${r.restaurantId}</td>
+                    <td>${r.restaurantName}</td>
+                    <td>${r.totalOrders}</td>
+                    <td>${r.totalRevenue.toFixed(2)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`;
+          content += restHtml;
+        } else {
+          content += `<p class="text-muted mt-3">No restaurants found for this owner.</p>`;
+        }
+      }
+
+      Swal.fire({
+        title: title,
+        html: content,
+        width: 700,
+        confirmButtonText: "Close",
+        showCloseButton: true
+      });
+    },
+    error: function () {
+      Swal.fire("Error", "Failed to fetch user details.", "error");
+    }
+  });
 }
 
-function renderUsersTable(users) {
-    let html = `
-    <div class="container mt-4">
-        <h3 class="mb-4">User Management</h3>
-        <table id="usersTable" class="table table-striped table-bordered">
-            <thead class="table-dark">
-                <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Phone</th>
-                    <th>Role</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
 
-    users.forEach(u => {
-        let statusBadge = u.status === "Active"
-            ? `<span class="badge bg-success">Active</span>`
-            : `<span class="badge bg-danger">Blocked</span>`;
+---
 
-        html += `
-            <tr>
-                <td>${u.userid}</td>
-                <td>${u.name}</td>
-                <td>${u.email}</td>
-                <td>${u.phonenumber}</td>
-                <td>${u.role}</td>
-                <td>${statusBadge}</td>
-                <td>${u.created_at}</td>
-                <td>
-                    <button class="btn btn-sm btn-info me-1 view-user" data-id="${u.userid}">View</button>
-                    <button class="btn btn-sm btn-warning me-1 toggle-user" data-id="${u.userid}" data-status="${u.status}">
-                        ${u.status === "Active" ? "Block" : "Unblock"}
-                    </button>
-                    <button class="btn btn-sm btn-danger delete-user" data-id="${u.userid}">Delete</button>
-                </td>
-            </tr>
-        `;
-    });
+⚙️ Behavior Summary
 
-    html += `</tbody></table></div>`;
+Role	Condition	Result
 
-    $("#content-area").html(html);
+Customer	Has orders	Shows user info + order table
+Customer	No orders	Shows “No orders found”
+Restaurant	Has restaurants	Shows user info + restaurant table
+Restaurant	No restaurants	Shows “No restaurants found”
+Any	Not found	SweetAlert error
 
-    if ($.fn.DataTable) {
-        $("#usersTable").DataTable({
-            pageLength: 10,
-            responsive: true,
-            destroy: true
-        });
+
+
+---
+
+Would you like me to now create the Servlet → Service → DAO backend flow (viewUser action) that returns the JSON response for this?
+
+
+Excellent 👍 — here’s the complete backend flow (Servlet → Service → DAO → Model) for the viewUser action, matching your architecture and SweetAlert UI design.
+
+
+---
+
+🧩 1️⃣ Servlet — AdminDashboardServlet.java
+
+@WebServlet("/AdminDashboardServlet")
+public class AdminDashboardServlet extends HttpServlet {
+    private AdminService adminService = new AdminService();
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+
+        String action = request.getParameter("action");
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        Gson gson = new Gson();
+
+        try {
+            if ("viewUser".equals(action)) {
+                int userId = Integer.parseInt(request.getParameter("userId"));
+                Map<String, Object> result = adminService.getUserDetails(userId);
+                response.getWriter().write(gson.toJson(result));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.getWriter().write("{\"error\":\"Something went wrong\"}");
+        }
+    }
+}
+
+
+---
+
+⚙️ 2️⃣ Service — AdminService.java
+
+public class AdminService {
+    private AdminDAO adminDAO = new AdminDAO();
+
+    public Map<String, Object> getUserDetails(int userId) {
+        Map<String, Object> response = new HashMap<>();
+
+        User user = adminDAO.fetchUserById(userId);
+        if (user == null) {
+            return response;
+        }
+
+        response.put("user", user);
+
+        if ("Customer".equalsIgnoreCase(user.getRole())) {
+            List<Order> orders = adminDAO.fetchOrdersByUser(userId);
+            response.put("orders", orders);
+        } else if ("Restaurant".equalsIgnoreCase(user.getRole())) {
+            List<Restaurant> restaurants = adminDAO.fetchRestaurantsByOwner(userId);
+            response.put("restaurants", restaurants);
+        }
+
+        return response;
+    }
+}
+
+
+---
+
+🧠 3️⃣ DAO — AdminDAO.java
+
+public class AdminDAO {
+
+    public User fetchUserById(int userId) {
+        User user = null;
+        String sql = "SELECT * FROM food.M_D_USERS WHERE userid = ?";
+
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                user = new User();
+                user.setUserId(rs.getInt("userid"));
+                user.setName(rs.getString("name"));
+                user.setEmail(rs.getString("email"));
+                user.setPhone(rs.getString("phonenumber"));
+                user.setRole(rs.getString("role"));
+                user.setStatus(rs.getString("status"));
+                user.setCreatedAt(rs.getTimestamp("created_at"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return user;
     }
 
-    $(".view-user").click(function() { viewUserDetails($(this).data("id")); });
-    $(".toggle-user").click(function() { toggleUserStatus($(this).data("id"), $(this).data("status")); });
-    $(".delete-user").click(function() { deleteUser($(this).data("id")); });
+    public List<Order> fetchOrdersByUser(int userId) {
+        List<Order> orders = new ArrayList<>();
+        String sql = "SELECT o.order_id, r.name AS restaurant_name, o.amount, o.order_date, o.status " +
+                     "FROM food.M_D_ORDERS o " +
+                     "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                     "WHERE o.customer_id = ? ORDER BY o.order_date DESC LIMIT 5";
+
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setRestaurantName(rs.getString("restaurant_name"));
+                order.setAmount(rs.getDouble("amount"));
+                order.setOrderDate(rs.getDate("order_date"));
+                order.setStatus(rs.getString("status"));
+                orders.add(order);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return orders;
+    }
+
+    public List<Restaurant> fetchRestaurantsByOwner(int userId) {
+        List<Restaurant> restaurants = new ArrayList<>();
+        String sql = "SELECT restaurant_id, name AS restaurant_name, total_orders, total_revenue " +
+                     "FROM food.M_D_RESTAURANT WHERE owner_id = ?";
+
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Restaurant r = new Restaurant();
+                r.setRestaurantId(rs.getInt("restaurant_id"));
+                r.setRestaurantName(rs.getString("restaurant_name"));
+                r.setTotalOrders(rs.getInt("total_orders"));
+                r.setTotalRevenue(rs.getDouble("total_revenue"));
+                restaurants.add(r);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return restaurants;
+    }
 }
 
 
-after clicking user we called above functions and we got a users now we need to implement after click view
+---
+
+🧾 4️⃣ Model Classes (Simple POJOs)
+
+User.java
+
+public class User {
+    private int userId;
+    private String name;
+    private String email;
+    private String phone;
+    private String role;
+    private String status;
+    private Timestamp createdAt;
+
+    // Getters and Setters
+}
+
+Order.java
+
+public class Order {
+    private int orderId;
+    private String restaurantName;
+    private double amount;
+    private Date orderDate;
+    private String status;
+
+    // Getters and Setters
+}
+
+Restaurant.java
+
+public class Restaurant {
+    private int restaurantId;
+    private String restaurantName;
+    private int totalOrders;
+    private double totalRevenue;
+
+    // Getters and Setters
+}
+
+
+---
+
+🧩 JSON Response Example
+
+If Customer:
+
+{
+  "user": {
+    "userId": 5,
+    "name": "Karthik",
+    "role": "Customer",
+    "status": "Active",
+    "email": "karthik@gmail.com",
+    "phone": "9876543210",
+    "createdAt": "2025-10-21T14:20:00"
+  },
+  "orders": [
+    {
+      "orderId": 201,
+      "restaurantName": "Annapoorna",
+      "amount": 250.75,
+      "orderDate": "2025-10-22",
+      "status": "Delivered"
+    }
+  ]
+}
+
+If Restaurant Owner:
+
+{
+  "user": {
+    "userId": 7,
+    "name": "Rajesh",
+    "role": "Restaurant",
+    "status": "Active",
+    "email": "rajesh@gmail.com",
+    "phone": "9000000001",
+    "createdAt": "2025-10-15T12:10:00"
+  },
+  "restaurants": [
+    {
+      "restaurantId": 10,
+      "restaurantName": "Spice Villa",
+      "totalOrders": 120,
+      "totalRevenue": 45000.75
+    }
+  ]
+}
+
+
+---
+
+Would you like me to now show the SQL table structure (M_D_USERS, M_D_RESTAURANT, M_D_ORDERS) for this flow — so you can verify column names and constraints before testing?
