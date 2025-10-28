@@ -1,54 +1,129 @@
-@Override
-protected void doPost(HttpServletRequest request, HttpServletResponse response)
-        throws ServletException, IOException {
+const registrationFields = [
+  { name: "address", type: "text", placeholder: "Address", required: false },
+  { name: "phonenumber", type: "text", placeholder: "Phone Number", required: true },
+  { name: "password", type: "password", placeholder: "Password", required: true },
+  { name: "email", type: "email", placeholder: "Email", required: true },
+  { name: "name", type: "text", placeholder: "Full Name", required: true },
+  {
+    name: "role",
+    type: "select",
+    placeholder: "Select Role",
+    required: true,
+    options: ["customer", "restaurant"]
+  }
+];
 
-    response.setContentType("application/json;charset=UTF-8");
-    String action = request.getParameter("action");
+$(document).ready(function () {
+  const form = $("#registerForm");
 
-    try (PrintWriter out = response.getWriter()) {
-
-        if ("toggleRestaurantStatus".equals(action)) {
-            int restaurantId = Integer.parseInt(request.getParameter("restaurantId"));
-            String status = request.getParameter("status");
-            boolean updated = adminService.toggleRestaurantStatus(restaurantId, status);
-
-            out.write("{\"success\":" + updated + "}");
-            return; // ✅ prevent fall-through
-
-        } else if ("deleteRestaurant".equals(action)) {
-            int restaurantId = Integer.parseInt(request.getParameter("restaurantId"));
-            boolean deleted = adminService.deleteRestaurant(restaurantId);
-
-            out.write("{\"success\":" + deleted + "}");
-            return; // ✅ prevent fall-through
-        }
-
-        // 🧩 NEW BLOCK for user toggle — isolated & safe
-        else if ("toggleUserStatus".equals(action)) {
-            int userId = Integer.parseInt(request.getParameter("userId"));
-            String status = request.getParameter("status"); // e.g., "Active" or "Blocked"
-
-            boolean success = adminService.toggleUserStatus(userId, status);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", success);
-            result.put("message", success
-                    ? (status.equalsIgnoreCase("Active") ? "User blocked successfully" : "User unblocked successfully")
-                    : "Failed to update user status");
-
-            out.write(new Gson().toJson(result));
-            return; // ✅ ensures this response does not affect others
-        }
-
-        // Fallback for unknown actions
-        else {
-            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-            out.write("{\"error\":\"Unknown action\"}");
-        }
-
-    } catch (Exception e) {
-        e.printStackTrace();
-        response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-        response.getWriter().write("{\"error\":\"Server error occurred\"}");
+  // Dynamically create fields with small error span
+  registrationFields.forEach((field) => {
+    let fieldHtml = "";
+    if (field.type === "select") {
+      fieldHtml = `
+        <div class="mb-4">
+          <label class="block mb-2 text-sm font-semibold text-orange-400">${field.placeholder}</label>
+          <select name="${field.name}"
+            class="w-full bg-gray-400 border border-white/20 text-white p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-400 transition"
+            ${field.required ? "required" : ""}>
+            <option value="">-- Select --</option>
+            ${field.options
+              .map(
+                (opt) =>
+                  `<option value="${opt}">${opt.charAt(0).toUpperCase() + opt.slice(1)}</option>`
+              )
+              .join("")}
+          </select>
+          <small class="text-red-400 text-sm hidden" id="${field.name}Error"></small>
+        </div>`;
+    } else {
+      fieldHtml = `
+        <div class="mb-4">
+          <label class="block mb-2 text-sm font-semibold text-orange-400">${field.placeholder}</label>
+          <input type="${field.type}" name="${field.name}" placeholder="${field.placeholder}"
+            class="w-full bg-white/10 border border-white/20 text-white placeholder-gray-400 p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-400 transition"
+            ${field.required ? "required" : ""}/>
+          <small class="text-red-400 text-sm hidden" id="${field.name}Error"></small>
+        </div>`;
     }
-}
+    form.prepend(fieldHtml);
+  });
+
+  // 🔹 Live Validation
+  $(document).on("input", 'input[name="email"]', function () {
+    const email = $(this).val().trim();
+    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    showError("email", valid ? "" : "Invalid email format");
+  });
+
+  $(document).on("input", 'input[name="phonenumber"]', function () {
+    const phone = $(this).val().trim();
+    const valid = /^[0-9]{10}$/.test(phone);
+    showError("phonenumber", valid ? "" : "Phone must be 10 digits");
+  });
+
+  $(document).on("input", 'input[name="password"]', function () {
+    const pass = $(this).val();
+    const valid = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/.test(pass);
+    showError("password", valid ? "" : "Weak password — must include upper, lower, number & special char, 8+ chars");
+  });
+
+  $(document).on("input", 'input[name="name"]', function () {
+    const name = $(this).val().trim();
+    showError("name", name.length >= 3 ? "" : "Name must be at least 3 characters");
+  });
+
+  function showError(fieldName, message) {
+    const errorElem = $(`#${fieldName}Error`);
+    if (message) {
+      errorElem.text(message).removeClass("hidden");
+    } else {
+      errorElem.addClass("hidden");
+    }
+  }
+
+  // 🔹 Submit Form
+  $("#submitBtn").click(function (e) {
+    e.preventDefault();
+
+    // Check all validations before submit
+    const invalid = $("small[id$='Error']").filter((_, el) => !$(el).hasClass("hidden")).length;
+    if (invalid > 0) {
+      $.toast({
+        heading: "Error",
+        text: "Please fix the highlighted fields!",
+        icon: "error",
+        position: "top-right",
+      });
+      return;
+    }
+
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/user",
+      type: "POST",
+      data: $("#registerForm").serialize() + "&action=register",
+      dataType: "json",
+      success: function (response) {
+        if (response.status === "success") {
+          Swal.fire({
+            icon: "success",
+            title: "Registration Successful",
+            text: response.message,
+            timer: 2000,
+            showConfirmButton: false,
+          });
+          setTimeout(() => window.location.href = response.redirect, 2000);
+        } else {
+          Swal.fire({ icon: "error", title: "Oops!", text: response.message });
+        }
+      },
+      error: function (xhr, status, error) {
+        Swal.fire({
+          icon: "error",
+          title: "Server Error",
+          text: "Something went wrong: " + error,
+        });
+      },
+    });
+  });
+});
