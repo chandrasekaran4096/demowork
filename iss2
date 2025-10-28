@@ -1,97 +1,135 @@
-function loadDashboard() {
+in restaurant owner module we have incoming order section from there we called backend it is that backend giving all orders details ,it should give the orders details of that restaurant owners only in front end add one more column "restaurant name"
+function loadIncomingOrders() {
+  // Reset mainContent view
+  $("#mainContent").html(`
+    <div id="incomingOrdersContainer" class="p-6">
+      <h2 class="text-3xl font-bold text-orange-400 mb-6">Incoming Orders </h2>
+      <table id="incomingOrdersTable" class="display w-full">
+        <thead>
+          <tr>
+            <th>Order ID</th>
+            <th>Customer Name</th>
+            <th>Items</th>
+            <th>Total Amount</th>
+            <th>Status</th>
+            <th>Order Date</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  `);
+
   $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
+    url: "http://localhost:8080/BiteBudddy/OrderServlet",
     method: "GET",
-    data: { action: "dashboard" },
-    success: function (response) {
-      let data = response;
-      if (typeof response === "string") {
-        data = JSON.parse(response);
-      }
-
-      // Handle unauthorized or forbidden responses even in success block (in case backend sends JSON)
-      if (data.error === "Not authenticated") {
-        Swal.fire({
-          title: "Session Expired",
-          text: "Please log in again to continue.",
-          icon: "warning",
-          confirmButtonText: "Go to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-        return;
-      }
-
-      if (data.error === "Requires admin role") {
-        Swal.fire({
-          title: "Access Denied",
-          text: "You don’t have permission to access this page.",
-          icon: "error",
-          confirmButtonText: "Back to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-        return;
-      }
-
-      // ✅ Normal Dashboard Rendering
-      const dashboardHTML = `
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Users</p>
-            <h2 class="text-2xl font-bold">${data.totalUsers}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Restaurants</p>
-            <h2 class="text-2xl font-bold">${data.totalRestaurants}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Orders</p>
-            <h2 class="text-2xl font-bold">${data.totalOrders}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Revenue</p>
-            <h2 class="text-2xl font-bold">₹${data.totalRevenue}</h2>
-          </div>
-        </div>
-
-        <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div class="bg-white p-6 rounded-lg shadow">
-            <h3 class="text-lg font-semibold mb-4">Monthly Revenue Trend</h3>
-            <canvas id="revenueChart" height="200"></canvas>
-          </div>
-
-          <div class="bg-white p-6 rounded-lg shadow">
-            <h3 class="text-lg font-semibold mb-4">Orders by Restaurant</h3>
-            <canvas id="ordersChart" height="200"></canvas>
-          </div>
-        </div>
-      `;
-      $("#content-area").html(dashboardHTML);
-      renderCharts(data);
+    data: { action: "incomingOrders" },
+    dataType: "json",
+    success: function(res) {
+      populateOrdersTable(res);
     },
-    error: function (xhr) {
-      if (xhr.status === 401) {
-        Swal.fire({
-          title: "Session Expired",
-          text: "Please log in again.",
-          icon: "warning",
-          confirmButtonText: "Go to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-      } else if (xhr.status === 403) {
-        Swal.fire({
-          title: "Access Denied",
-          text: "You don’t have permission to access this page.",
-          icon: "error",
-          confirmButtonText: "Back to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-      } else {
-        $("#content-area").html("<p class='text-center text-red-500'>Failed to load dashboard data.</p>");
-      }
-    },
+    error: function() {
+      Swal.fire("Error", "Failed to load incoming orders.", "error");
+    }
   });
 }
+
+let incomingOrdersTable = null;
+
+function populateOrdersTable(orders) {
+  if (incomingOrdersTable) {
+    incomingOrdersTable.destroy();
+    $("#incomingOrdersTable tbody").empty();
+  }
+
+  console.log("Orders received:", orders);
+
+  orders.forEach(order => {
+    const items = order.itemss.map(i => `${i.itemName} x${i.quantity}`).join("<br>");
+    const statusOptions = ["PLACED", "PREPARING", "PACKING", "GIVEN_TO_DELIVERY"];
+
+    let statusDropdown = `<select class="orderStatus text-black rounded px-2 py-1" data-orderid="${order.orderId}">`;
+    statusOptions.forEach(s => {
+      const selected = s === order.status ? "selected" : "";
+      statusDropdown += `<option value="${s}" ${selected}>${s}</option>`;
+    });
+    statusDropdown += "</select>";
+
+    const row = `
+      <tr>
+        <td>${order.orderId}</td>
+        <td>${order.customerName}</td>
+        <td>${items}</td>
+        <td>₹${order.totalAmount.toFixed(2)}</td>
+        <td>${order.status}</td>
+        <td>${order.orderDate}</td>
+        <td>${statusDropdown}</td>
+      </tr>
+    `;
+
+    $("#incomingOrdersTable tbody").append(row);
+  });
+
+  incomingOrdersTable = $("#incomingOrdersTable").DataTable({
+    pageLength: 5
+  });
+}
+
+servlet
+
+public class OrderServlet extends HttpServlet {
+    private final OrderService orderService = new OrderService();
+    private final CartService cartService = new CartService();
+    private final Gson gson = new Gson();
+    private OrderDAO orderDao = new OrderDAO();
+    
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+        String action = request.getParameter("action");
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+
+        if("incomingOrders".equals(action)) {
+            try {
+                List<Order> orders = orderDao.getIncomingOrders(); // all not GIVEN_TO_DELIVERY
+                Gson gson = new Gson();
+                response.getWriter().write(gson.toJson(orders));
+            } catch (Exception e) {
+                e.printStackTrace();
+                response.setStatus(500);
+                response.getWriter().write("{\"error\":\"Failed to fetch orders\"}");
+            }
+        }
+    }
+
+
+dao 
+public List<Order> getIncomingOrders() throws SQLException  {
+        String sql = "SELECT o.order_id, o.userid, o.restaurant_id, o.total_amount, o.status, o.order_date, u.name as customerName " +
+                     "FROM food.M_D_ORDERS o " +
+                     "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                     "WHERE o.status !='GIVEN_TO_DELIVERY' AND o.is_deleted=0";
+
+        List<Order> orders = new ArrayList<>();
+        try (Connection con = DBConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            while(rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setCustomerName(rs.getString("customerName"));
+                order.setTotalAmount(rs.getDouble("total_amount"));
+                order.setStatus(rs.getString("status"));
+                order.setOrderDate(rs.getTimestamp("order_date").toString());
+
+                // Fetch items for this order
+                order.setItemss(getOrderItems(order.getOrderId()));
+
+                orders.add(order);
+            }
+        }
+        return orders;
+    }
+
+give correct before go through our database tables 
