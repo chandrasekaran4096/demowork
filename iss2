@@ -1,13 +1,112 @@
-in restaurant owner module we have incoming order section from there we called backend it is that backend giving all orders details ,it should give the orders details of that restaurant owners only in front end add one more column "restaurant name"
+Perfect 👍 — based on your database schema and your goal:
+
+Each restaurant owner (in M_S_USERS) can have multiple restaurants (M_D_RESTAURANT.userid = M_S_USERS.userid).
+
+Each order (M_D_ORDERS.restaurant_id) belongs to one restaurant.
+
+So, when an owner logs in, they should see only the orders from their restaurants.
+
+
+We’ll make 3 clean updates:
+
+
+---
+
+✅ 1️⃣ Backend — OrderServlet
+
+We’ll get the logged-in user from the session and send only their restaurant orders.
+
+@Override
+protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    String action = request.getParameter("action");
+    response.setContentType("application/json");
+    response.setCharacterEncoding("UTF-8");
+
+    if ("incomingOrders".equals(action)) {
+        HttpSession session = request.getSession(false);
+        if (session == null || session.getAttribute("user") == null) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.getWriter().write("{\"error\":\"Not authenticated\"}");
+            return;
+        }
+
+        User loggedUser = (User) session.getAttribute("user");
+        int ownerId = loggedUser.getUserid();
+
+        try {
+            List<Order> orders = orderDao.getIncomingOrdersByOwner(ownerId);  // ✅ owner-specific orders
+            Gson gson = new Gson();
+            response.getWriter().write(gson.toJson(orders));
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.setStatus(500);
+            response.getWriter().write("{\"error\":\"Failed to fetch orders\"}");
+        }
+    }
+}
+
+
+---
+
+✅ 2️⃣ DAO — OrderDAO.java
+
+We’ll fetch only orders belonging to restaurants owned by the logged-in user and include the restaurant name.
+
+public List<Order> getIncomingOrdersByOwner(int ownerId) throws SQLException {
+    String sql = "SELECT o.order_id, o.userid, o.restaurant_id, r.name AS restaurant_name, " +
+                 "u.name AS customer_name, o.total_amount, o.status, o.order_date " +
+                 "FROM food.M_D_ORDERS o " +
+                 "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                 "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                 "WHERE r.userid = ? AND o.status != 'GIVEN_TO_DELIVERY' AND o.is_deleted = 0 " +
+                 "ORDER BY o.order_date DESC";
+
+    List<Order> orders = new ArrayList<>();
+    try (Connection con = DBConnection.getConnection();
+         PreparedStatement ps = con.prepareStatement(sql)) {
+
+        ps.setInt(1, ownerId);
+
+        try (ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setCustomerName(rs.getString("customer_name"));
+                order.setRestaurantName(rs.getString("restaurant_name")); // ✅ new field
+                order.setTotalAmount(rs.getDouble("total_amount"));
+                order.setStatus(rs.getString("status"));
+                order.setOrderDate(rs.getTimestamp("order_date").toString());
+                order.setItemss(getOrderItems(order.getOrderId()));
+
+                orders.add(order);
+            }
+        }
+    }
+    return orders;
+}
+
+🧠 Make sure your Order model has a new field:
+
+private String restaurantName;
+public String getRestaurantName() { return restaurantName; }
+public void setRestaurantName(String restaurantName) { this.restaurantName = restaurantName; }
+
+
+---
+
+✅ 3️⃣ Frontend — loadIncomingOrders()
+
+Add Restaurant Name column and populate it.
+
 function loadIncomingOrders() {
-  // Reset mainContent view
   $("#mainContent").html(`
     <div id="incomingOrdersContainer" class="p-6">
-      <h2 class="text-3xl font-bold text-orange-400 mb-6">Incoming Orders </h2>
+      <h2 class="text-3xl font-bold text-orange-400 mb-6">Incoming Orders</h2>
       <table id="incomingOrdersTable" class="display w-full">
         <thead>
           <tr>
             <th>Order ID</th>
+            <th>Restaurant Name</th> <!-- ✅ Added -->
             <th>Customer Name</th>
             <th>Items</th>
             <th>Total Amount</th>
@@ -26,16 +125,20 @@ function loadIncomingOrders() {
     method: "GET",
     data: { action: "incomingOrders" },
     dataType: "json",
-    success: function(res) {
+    success: function (res) {
       populateOrdersTable(res);
     },
-    error: function() {
-      Swal.fire("Error", "Failed to load incoming orders.", "error");
-    }
+    error: function (xhr) {
+      if (xhr.status === 401) {
+        Swal.fire("Session Expired", "Please login again.", "warning").then(() => {
+          window.location.href = "login.html";
+        });
+      } else {
+        Swal.fire("Error", "Failed to load incoming orders.", "error");
+      }
+    },
   });
 }
-
-let incomingOrdersTable = null;
 
 function populateOrdersTable(orders) {
   if (incomingOrdersTable) {
@@ -43,12 +146,9 @@ function populateOrdersTable(orders) {
     $("#incomingOrdersTable tbody").empty();
   }
 
-  console.log("Orders received:", orders);
-
   orders.forEach(order => {
     const items = order.itemss.map(i => `${i.itemName} x${i.quantity}`).join("<br>");
     const statusOptions = ["PLACED", "PREPARING", "PACKING", "GIVEN_TO_DELIVERY"];
-
     let statusDropdown = `<select class="orderStatus text-black rounded px-2 py-1" data-orderid="${order.orderId}">`;
     statusOptions.forEach(s => {
       const selected = s === order.status ? "selected" : "";
@@ -59,6 +159,7 @@ function populateOrdersTable(orders) {
     const row = `
       <tr>
         <td>${order.orderId}</td>
+        <td>${order.restaurantName}</td> <!-- ✅ Added -->
         <td>${order.customerName}</td>
         <td>${items}</td>
         <td>₹${order.totalAmount.toFixed(2)}</td>
@@ -76,60 +177,16 @@ function populateOrdersTable(orders) {
   });
 }
 
-servlet
 
-public class OrderServlet extends HttpServlet {
-    private final OrderService orderService = new OrderService();
-    private final CartService cartService = new CartService();
-    private final Gson gson = new Gson();
-    private OrderDAO orderDao = new OrderDAO();
-    
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
-        String action = request.getParameter("action");
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
+---
 
-        if("incomingOrders".equals(action)) {
-            try {
-                List<Order> orders = orderDao.getIncomingOrders(); // all not GIVEN_TO_DELIVERY
-                Gson gson = new Gson();
-                response.getWriter().write(gson.toJson(orders));
-            } catch (Exception e) {
-                e.printStackTrace();
-                response.setStatus(500);
-                response.getWriter().write("{\"error\":\"Failed to fetch orders\"}");
-            }
-        }
-    }
+✅ Summary:
+
+Only owner’s restaurant orders are fetched (WHERE r.userid = ?).
+
+Added restaurantName column both backend & frontend.
+
+Existing features (status update, filtering) unaffected.
 
 
-dao 
-public List<Order> getIncomingOrders() throws SQLException  {
-        String sql = "SELECT o.order_id, o.userid, o.restaurant_id, o.total_amount, o.status, o.order_date, u.name as customerName " +
-                     "FROM food.M_D_ORDERS o " +
-                     "JOIN food.M_S_USERS u ON o.userid = u.userid " +
-                     "WHERE o.status !='GIVEN_TO_DELIVERY' AND o.is_deleted=0";
-
-        List<Order> orders = new ArrayList<>();
-        try (Connection con = DBConnection.getConnection();
-             PreparedStatement ps = con.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-
-            while(rs.next()) {
-                Order order = new Order();
-                order.setOrderId(rs.getInt("order_id"));
-                order.setCustomerName(rs.getString("customerName"));
-                order.setTotalAmount(rs.getDouble("total_amount"));
-                order.setStatus(rs.getString("status"));
-                order.setOrderDate(rs.getTimestamp("order_date").toString());
-
-                // Fetch items for this order
-                order.setItemss(getOrderItems(order.getOrderId()));
-
-                orders.add(order);
-            }
-        }
-        return orders;
-    }
-
-give correct before go through our database tables 
+Would you like me to include the backend update for status update (order status change) to ensure it only affects the owner’s restaurant orders too?
