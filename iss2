@@ -4,11 +4,37 @@ function loadDashboard() {
     method: "GET",
     data: { action: "dashboard" },
     success: function (response) {
-      let data = response; 
+      let data = response;
       if (typeof response === "string") {
         data = JSON.parse(response);
       }
 
+      // Handle unauthorized or forbidden responses even in success block (in case backend sends JSON)
+      if (data.error === "Not authenticated") {
+        Swal.fire({
+          title: "Session Expired",
+          text: "Please log in again to continue.",
+          icon: "warning",
+          confirmButtonText: "Go to Login"
+        }).then(() => {
+          window.location.href = "login.html";
+        });
+        return;
+      }
+
+      if (data.error === "Requires admin role") {
+        Swal.fire({
+          title: "Access Denied",
+          text: "You don’t have permission to access this page.",
+          icon: "error",
+          confirmButtonText: "Back to Login"
+        }).then(() => {
+          window.location.href = "login.html";
+        });
+        return;
+      }
+
+      // ✅ Normal Dashboard Rendering
       const dashboardHTML = `
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div class="bg-white p-4 rounded-lg shadow text-center">
@@ -44,93 +70,28 @@ function loadDashboard() {
       $("#content-area").html(dashboardHTML);
       renderCharts(data);
     },
-    error: function () {
-      $("#content-area").html("<p class='text-center text-red-500'>Failed to load dashboard data.</p>");
+    error: function (xhr) {
+      if (xhr.status === 401) {
+        Swal.fire({
+          title: "Session Expired",
+          text: "Please log in again.",
+          icon: "warning",
+          confirmButtonText: "Go to Login"
+        }).then(() => {
+          window.location.href = "login.html";
+        });
+      } else if (xhr.status === 403) {
+        Swal.fire({
+          title: "Access Denied",
+          text: "You don’t have permission to access this page.",
+          icon: "error",
+          confirmButtonText: "Back to Login"
+        }).then(() => {
+          window.location.href = "login.html";
+        });
+      } else {
+        $("#content-area").html("<p class='text-center text-red-500'>Failed to load dashboard data.</p>");
+      }
     },
   });
 }
-
-
-
-
-      @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json;charset=UTF-8");
-        HttpSession session = req.getSession(false);
-
-
-        if (session == null || session.getAttribute("user") == null) {
-            resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            resp.getWriter().write("{\"error\":\"Not authenticated\"}");
-            return;
-        }
-
-
-        Object userObj = session.getAttribute("user");
-        if (userObj != null) {
-            try {
-                
-                User u = (User) userObj;
-                if (!"superadmin".equalsIgnoreCase(u.getRole())) {
-                    resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                    resp.getWriter().write("{\"error\":\"Requires admin role\"}");
-                    return;
-                }
-            } catch (Exception e) { 
-            	e.printStackTrace();
-            	}
-        }
-
-        String action = req.getParameter("action");
-        if (action == null) action = "dashboard";
-
-        try (PrintWriter out = resp.getWriter()) {
-            if ("dashboard".equals(action)) {
-               
-            	DashboardResponse dashboard = adminService.getDashboard();
-                out.write(gson.toJson(dashboard));
-
-            } else if ("restaurants".equals(action)) {
-                List<RestaurantDashboardModel> restaurants = adminService.getAllRestaurants();
-                Map<String, Object> result = new HashMap<>();
-                result.put("restaurants", restaurants);
-                out.write(gson.toJson(result));
-            } else if ("viewRestaurant".equals(action)) {
-                int restaurantId = Integer.parseInt(req.getParameter("restaurantId"));
-                Restaurant restaurant = adminService.getRestaurantDetails(restaurantId);
-
-                if (restaurant == null) {
-                    out.print(gson.toJson(new ErrorResponse("Restaurant not found")));
-                    return;
-                }
-
-                String json = gson.toJson(restaurant);
-                out.print(json);
-            }
-            else if("users".equals(action)){
-            	
-            	System.out.println("Msg from users in admindash boaras");
-            	List<User> users = adminService.getAllUsers();
-                Map<String, Object> data = new HashMap<>();
-                data.put("users", users);
-
-                String jsonResponse = gson.toJson(data);
-                resp.getWriter().write(jsonResponse);
-            }
-            else if ("viewUser".equals(action)) {
-                int userId = Integer.parseInt(req.getParameter("userId"));
-                Map<String, Object> result = adminService.getUserDetails(userId);
-                resp.getWriter().write(gson.toJson(result));
-            }
-            else {
-            	resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                out.write("{\"error\":\"Unknown action\"}");
-            }
-            
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            resp.setStatus(500);
-            resp.getWriter().write("{\"error\":\"Server error\"}");
-        }
-    }
-handle this if not authenticated show one sweet alert and redirect to login.html
