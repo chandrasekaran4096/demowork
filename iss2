@@ -1,131 +1,78 @@
-log 4j.xml
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE log4j:configuration SYSTEM "log4j.dtd">
- 
+
 <log4j:configuration>
- 
+
     <!-- Appender for console output -->
-<appender name="console" class="org.apache.log4j.ConsoleAppender">
-<layout class="org.apache.log4j.PatternLayout">
-<param name="ConversionPattern" value="%d{HH:mm:ss} %-5p %c{1} - %m%n"/>
-</layout>
-</appender>
- 
+    <appender name="console" class="org.apache.log4j.ConsoleAppender">
+        <layout class="org.apache.log4j.PatternLayout">
+            <param name="ConversionPattern" value="%d{HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
+        </layout>
+    </appender>
+
     <!-- Appender for INFO level to a file -->
-<appender name="infoFile" class="org.apache.log4j.FileAppender">
-<param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/info.log"/>
-<param name="Append" value="true"/>
-<param name="Threshold" value="INFO"/>
-<layout class="org.apache.log4j.PatternLayout">
-<param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1} - %m%n"/>
-</layout>
-</appender>
- 
+    <appender name="infoFile" class="org.apache.log4j.RollingFileAppender">
+        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/info.log"/>
+        <param name="Append" value="true"/>
+        <param name="MaxFileSize" value="10MB"/>
+        <param name="MaxBackupIndex" value="5"/>
+        <param name="Threshold" value="INFO"/>
+        <layout class="org.apache.log4j.PatternLayout">
+            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
+        </layout>
+    </appender>
+
     <!-- Appender for DEBUG level to a file -->
-<appender name="debugFile" class="org.apache.log4j.FileAppender">
-<param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/debug.log"/>
-<param name="Append" value="true"/>
-<param name="Threshold" value="DEBUG"/>
-<layout class="org.apache.log4j.PatternLayout">
-<param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1} - %m%n"/>
-</layout>
-</appender>
- 
+    <appender name="debugFile" class="org.apache.log4j.RollingFileAppender">
+        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/debug.log"/>
+        <param name="Append" value="true"/>
+        <param name="MaxFileSize" value="10MB"/>
+        <param name="MaxBackupIndex" value="5"/>
+        <param name="Threshold" value="DEBUG"/>
+        <layout class="org.apache.log4j.PatternLayout">
+            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
+        </layout>
+    </appender>
+
     <!-- Appender for ERROR level to a file -->
-<appender name="errorFile" class="org.apache.log4j.FileAppender">
-<param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/error.log"/>
-<param name="Append" value="true"/>
-<param name="Threshold" value="ERROR"/>
-<layout class="org.apache.log4j.PatternLayout">
-<param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1} - %m%n"/>
-</layout>
-</appender>
- 
+    <appender name="errorFile" class="org.apache.log4j.RollingFileAppender">
+        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/error.log"/>
+        <param name="Append" value="true"/>
+        <param name="MaxFileSize" value="10MB"/>
+        <param name="MaxBackupIndex" value="5"/>
+        <param name="Threshold" value="ERROR"/>
+        <layout class="org.apache.log4j.PatternLayout">
+            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
+        </layout>
+    </appender>
+
     <!-- Define a logger for your package to control output to files -->
-<logger name="servlets" additivity="true">
-<level value="DEBUG"/>
-<appender-ref ref="infoFile"/>
-<appender-ref ref="debugFile"/>
-<appender-ref ref="errorFile"/>
-</logger>
- 
+    <logger name="com.bite" additivity="true">
+        <level value="DEBUG"/>
+        <appender-ref ref="infoFile"/>
+        <appender-ref ref="debugFile"/>
+        <appender-ref ref="errorFile"/>
+    </logger>
+
     <!-- The root logger which all other loggers inherit from by default -->
-<root>
-<level value="all"/>
-<appender-ref ref="console"/>
-</root>
- 
+    <root>
+        <level value="DEBUG"/>
+        <appender-ref ref="console"/>
+    </root>
+
 </log4j:configuration>
+```
 
+## Changes Made
 
-Loggerutil.class
-package com.bite.util;
- 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
- 
-public class LoggerUtil {
-	 public static final Logger logger = LogManager.getLogger("CentralLogger");
-       public static Logger getLogger(Class<?> clazz) {
-    	    return LogManager.getLogger(clazz);
-    	  }
- 
-	    public static void info(String msg) {
-	        logger.info( msg);
-	    }
- 
-	    public static void debug(String msg) {
-	        logger.debug(msg);
-	    }
- 
-	    public static void error(String msg) {
-	        logger.error(msg);
-	    }
- 
-		public static void trace(String msg) {
-			logger.trace(msg);
-		}
- 
-		public static void warn(String msg) {
-			logger.warn(msg);
-		}
- 
-}
+1. **Added `%L` for line numbers**: Changed `%c{1} - %m%n` to `%c{1}:%L - %m%n`
+2. **Fixed logger name**: Changed from `"servlets"` to `"com.bite"` to match your package
+3. **Changed to RollingFileAppender**: Prevents unlimited log file growth
+4. **Added file rotation settings**: Max 10MB per file, keeps 5 backup files
 
-thrugh user servlet i am calling logger 
-package com.bite.controller;
+## Output Format
 
-import javax.servlet.*;
-import javax.servlet.http.*;
-
-import org.apache.log4j.Logger;
-
-import javax.servlet.annotation.*;
-import java.io.*;
-import com.bite.service.UserService;
-import com.bite.util.LoggerUtil;
-import com.google.gson.Gson;
-import com.bite.model.User;
-import com.bite.model.ResponseMessage;
-
-public class UserServlet extends HttpServlet {
-
-    private UserService userService;
-    private final Gson gson = new Gson();
-
-    @Override
-    public void init() {
-        userService = new UserService();
-    }
-
-    @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-        PrintWriter out = response.getWriter();
-        String action = request.getParameter("action");
-        ResponseMessage<?> resp;
-        final Logger logger = LoggerUtil.getLogger(UserServlet.class);
-        logger.info("logger check");
-
-but it not stores in file it shows only in consloe like this 12:04:51 INFO  UserServlet - logger check
+Now your logs will look like:
+```
+12:04:51 INFO  UserServlet:45 - logger check
+2025-10-29 12:04:51 INFO  UserServlet:45 - logger check
