@@ -10,69 +10,84 @@
         </layout>
     </appender>
 
-    <!-- Appender for INFO level to a file -->
+    <!-- Appender for INFO level ONLY -->
     <appender name="infoFile" class="org.apache.log4j.RollingFileAppender">
         <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/info.log"/>
         <param name="Append" value="true"/>
         <param name="MaxFileSize" value="10MB"/>
         <param name="MaxBackupIndex" value="5"/>
-        <param name="Threshold" value="INFO"/>
         <layout class="org.apache.log4j.PatternLayout">
             <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
         </layout>
+        <filter class="org.apache.log4j.varia.LevelRangeFilter">
+            <param name="LevelMin" value="INFO"/>
+            <param name="LevelMax" value="INFO"/>
+            <param name="AcceptOnMatch" value="true"/>
+        </filter>
     </appender>
 
-    <!-- Appender for DEBUG level to a file -->
+    <!-- Appender for DEBUG level ONLY -->
     <appender name="debugFile" class="org.apache.log4j.RollingFileAppender">
         <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/debug.log"/>
         <param name="Append" value="true"/>
         <param name="MaxFileSize" value="10MB"/>
         <param name="MaxBackupIndex" value="5"/>
-        <param name="Threshold" value="DEBUG"/>
         <layout class="org.apache.log4j.PatternLayout">
             <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
         </layout>
+        <filter class="org.apache.log4j.varia.LevelRangeFilter">
+            <param name="LevelMin" value="DEBUG"/>
+            <param name="LevelMax" value="DEBUG"/>
+            <param name="AcceptOnMatch" value="true"/>
+        </filter>
     </appender>
 
-    <!-- Appender for ERROR level to a file -->
+    <!-- Appender for ERROR level ONLY -->
     <appender name="errorFile" class="org.apache.log4j.RollingFileAppender">
         <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/error.log"/>
         <param name="Append" value="true"/>
         <param name="MaxFileSize" value="10MB"/>
         <param name="MaxBackupIndex" value="5"/>
-        <param name="Threshold" value="ERROR"/>
         <layout class="org.apache.log4j.PatternLayout">
             <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
         </layout>
+        <filter class="org.apache.log4j.varia.LevelRangeFilter">
+            <param name="LevelMin" value="ERROR"/>
+            <param name="LevelMax" value="FATAL"/>
+            <param name="AcceptOnMatch" value="true"/>
+        </filter>
+    </appender>
+
+    <!-- Appender for WARN level ONLY -->
+    <appender name="warnFile" class="org.apache.log4j.RollingFileAppender">
+        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/warn.log"/>
+        <param name="Append" value="true"/>
+        <param name="MaxFileSize" value="10MB"/>
+        <param name="MaxBackupIndex" value="5"/>
+        <layout class="org.apache.log4j.PatternLayout">
+            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
+        </layout>
+        <filter class="org.apache.log4j.varia.LevelRangeFilter">
+            <param name="LevelMin" value="WARN"/>
+            <param name="LevelMax" value="WARN"/>
+            <param name="AcceptOnMatch" value="true"/>
+        </filter>
     </appender>
 
     <!-- Define a logger for your package to control output to files -->
-    <logger name="com.bite" additivity="true">
+    <logger name="com.bite" additivity="false">
         <level value="DEBUG"/>
+        <appender-ref ref="console"/>
         <appender-ref ref="infoFile"/>
         <appender-ref ref="debugFile"/>
         <appender-ref ref="errorFile"/>
+        <appender-ref ref="warnFile"/>
     </logger>
 
-    <!-- The root logger which all other loggers inherit from by default -->
+    <!-- The root logger -->
     <root>
         <level value="DEBUG"/>
         <appender-ref ref="console"/>
     </root>
 
 </log4j:configuration>
-```
-
-## Changes Made
-
-1. **Added `%L` for line numbers**: Changed `%c{1} - %m%n` to `%c{1}:%L - %m%n`
-2. **Fixed logger name**: Changed from `"servlets"` to `"com.bite"` to match your package
-3. **Changed to RollingFileAppender**: Prevents unlimited log file growth
-4. **Added file rotation settings**: Max 10MB per file, keeps 5 backup files
-
-## Output Format
-
-Now your logs will look like:
-```
-12:04:51 INFO  UserServlet:45 - logger check
-2025-10-29 12:04:51 INFO  UserServlet:45 - logger check
