@@ -1,93 +1,30 @@
-<?xml version="1.0" encoding="UTF-8" ?>
-<!DOCTYPE log4j:configuration SYSTEM "log4j.dtd">
-
-<log4j:configuration>
-
-    <!-- Appender for console output -->
-    <appender name="console" class="org.apache.log4j.ConsoleAppender">
-        <layout class="org.apache.log4j.PatternLayout">
-            <param name="ConversionPattern" value="%d{HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
-        </layout>
-    </appender>
-
-    <!-- Appender for INFO level ONLY -->
-    <appender name="infoFile" class="org.apache.log4j.RollingFileAppender">
-        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/info.log"/>
-        <param name="Append" value="true"/>
-        <param name="MaxFileSize" value="10MB"/>
-        <param name="MaxBackupIndex" value="5"/>
-        <layout class="org.apache.log4j.PatternLayout">
-            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
-        </layout>
-        <filter class="org.apache.log4j.varia.LevelRangeFilter">
-            <param name="LevelMin" value="INFO"/>
-            <param name="LevelMax" value="INFO"/>
-            <param name="AcceptOnMatch" value="true"/>
-        </filter>
-    </appender>
-
-    <!-- Appender for DEBUG level ONLY -->
-    <appender name="debugFile" class="org.apache.log4j.RollingFileAppender">
-        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/debug.log"/>
-        <param name="Append" value="true"/>
-        <param name="MaxFileSize" value="10MB"/>
-        <param name="MaxBackupIndex" value="5"/>
-        <layout class="org.apache.log4j.PatternLayout">
-            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
-        </layout>
-        <filter class="org.apache.log4j.varia.LevelRangeFilter">
-            <param name="LevelMin" value="DEBUG"/>
-            <param name="LevelMax" value="DEBUG"/>
-            <param name="AcceptOnMatch" value="true"/>
-        </filter>
-    </appender>
-
-    <!-- Appender for ERROR level ONLY -->
-    <appender name="errorFile" class="org.apache.log4j.RollingFileAppender">
-        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/error.log"/>
-        <param name="Append" value="true"/>
-        <param name="MaxFileSize" value="10MB"/>
-        <param name="MaxBackupIndex" value="5"/>
-        <layout class="org.apache.log4j.PatternLayout">
-            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
-        </layout>
-        <filter class="org.apache.log4j.varia.LevelRangeFilter">
-            <param name="LevelMin" value="ERROR"/>
-            <param name="LevelMax" value="FATAL"/>
-            <param name="AcceptOnMatch" value="true"/>
-        </filter>
-    </appender>
-
-    <!-- Appender for WARN level ONLY -->
-    <appender name="warnFile" class="org.apache.log4j.RollingFileAppender">
-        <param name="File" value="C:/Users/chandrasekaran/.eclipse/BiteBudddy/logs/warn.log"/>
-        <param name="Append" value="true"/>
-        <param name="MaxFileSize" value="10MB"/>
-        <param name="MaxBackupIndex" value="5"/>
-        <layout class="org.apache.log4j.PatternLayout">
-            <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>
-        </layout>
-        <filter class="org.apache.log4j.varia.LevelRangeFilter">
-            <param name="LevelMin" value="WARN"/>
-            <param name="LevelMax" value="WARN"/>
-            <param name="AcceptOnMatch" value="true"/>
-        </filter>
-    </appender>
-
-    <!-- Define a logger for your package to control output to files -->
-    <logger name="com.bite" additivity="false">
-        <level value="DEBUG"/>
-        <appender-ref ref="console"/>
-        <appender-ref ref="infoFile"/>
-        <appender-ref ref="debugFile"/>
-        <appender-ref ref="errorFile"/>
-        <appender-ref ref="warnFile"/>
-    </logger>
-
-    <!-- The root logger -->
-    <root>
-        <level value="DEBUG"/>
-        <appender-ref ref="console"/>
-    </root>
-
-</log4j:configuration>
+log4j:WARN The processing instruction target matching "[xX][mM][lL]" is not allowed.
+log4j:ERROR Could not parse url [file:/C:/Users/chandrasekaran/.eclipse/.metadata/.plugins/org.eclipse.wst.server.core/tmp3/wtpwebapps/BiteBudddy/WEB-INF/classes/log4j.xml].
+org.xml.sax.SAXParseException; systemId: file:/C:/Users/chandrasekaran/.eclipse/.metadata/.plugins/org.eclipse.wst.server.core/tmp3/wtpwebapps/BiteBudddy/WEB-INF/classes/log4j.xml; lineNumber: 2; columnNumber: 6; The processing instruction target matching "[xX][mM][lL]" is not allowed.
+	at java.xml/com.sun.org.apache.xerces.internal.parsers.DOMParser.parse(DOMParser.java:261)
+	at java.xml/com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderImpl.parse(DocumentBuilderImpl.java:339)
+	at org.apache.log4j.xml.DOMConfigurator$2.parse(DOMConfigurator.java:769)
+	at org.apache.log4j.xml.DOMConfigurator.doConfigure(DOMConfigurator.java:871)
+	at org.apache.log4j.xml.DOMConfigurator.doConfigure(DOMConfigurator.java:778)
+	at org.apache.log4j.helpers.OptionConverter.selectAndConfigure(OptionConverter.java:526)
+	at org.apache.log4j.LogManager.<clinit>(LogManager.java:127)
+	at com.bite.util.LoggerUtil.<clinit>(LoggerUtil.java:7)
+	at com.bite.controller.UserServlet.doPost(UserServlet.java:33)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:555)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:623)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:199)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:144)
+	at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:51)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:168)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:144)
+	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:168)
+	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+	at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:482)
+	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:130)
+	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:93)
+	at org.apache.catalina.valves.AbstractAccessLogValve.invoke(AbstractAccessLogValve.java:656)
+	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:346)
+	at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:397)
+	at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:63)
+	at org.apache.coyote.AbstractProt
