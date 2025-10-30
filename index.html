@@ -1,189 +1,89 @@
-Great 👍 Let’s start with the frontend (JS) part for the Block/Unblock user feature.
+  <!-- Payment & Address Modal -->
+<div id="orderModal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+  <div class="bg-gray-900 text-white rounded-2xl p-8 w-full max-w-md shadow-xl">
+    <h2 class="text-2xl font-bold text-center mb-6 text-orange-400">Confirm Your Order</h2>
 
-Below is the jQuery code you can add inside your existing superAdmin.js file (right after the renderUsersTable() function).
+    <div class="mb-4">
+      <label class="block mb-1 text-gray-300">Shipping Address</label>
+      <textarea id="shippingAddress" class="w-full p-3 rounded bg-gray-800 border border-gray-700 focus:border-orange-500" rows="3" placeholder="Enter your full address"></textarea>
+    </div>
 
+    <div class="mb-4">
+      <label class="block mb-1 text-gray-300">Payment Method</label>
+      <select id="paymentMode" class="w-full p-3 rounded bg-gray-800 border border-gray-700 focus:border-orange-500">
+        <option value="">Select Payment Method</option>
+        <option value="Cash on Delivery">Cash on Delivery</option>
+        <option value="UPI">UPI</option>
+        <option value="Credit/Debit Card">Credit/Debit Card</option>
+      </select>
+    </div>
 
----
+    <div class="flex justify-between mt-6">
+      <button id="cancelOrder" class="bg-gray-700 px-5 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
+      <button id="confirmOrder" class="bg-orange-500 px-5 py-2 rounded-lg font-semibold hover:bg-orange-600">Confirm Order</button>
+    </div>
+  </div>
+</div>
 
-✅ Frontend Code (jQuery + SweetAlert)
+// Place Order
+  $("#placeOrder").on("click", function () {
+    const selectedItems = $(".select-item:checked");
+    if (selectedItems.length === 0) {
+      toast("Please select at least one item.", "#ff5252");
+      return;
+    }
+    $("#orderModal").removeClass("hidden");
+  });
 
-function toggleUserStatus(userId, currentStatus) {
-    let newStatus = currentStatus === "Active" ? "Blocked" : "Active";
-    let confirmMsg = currentStatus === "Active"
-        ? "Are you sure you want to block this user?"
-        : "Are you sure you want to unblock this user?";
+  // Cancel 
+  $("#cancelOrder").on("click", function () {
+    $("#orderModal").addClass("hidden");
+  });
 
-    Swal.fire({
-        title: "Confirm Action",
-        text: confirmMsg,
-        icon: "warning",
-        showCancelButton: true,
-        confirmButtonColor: "#3085d6",
-        cancelButtonColor: "#d33",
-        confirmButtonText: "Yes, proceed"
-    }).then((result) => {
-        if (result.isConfirmed) {
-            $.ajax({
-                url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-                method: "POST",
-                data: {
-                    action: "toggleUserStatus",
-                    userId: userId,
-                    currentStatus: currentStatus
-                },
-                success: function(response) {
-                    if (response.success) {
-                        Swal.fire("Success!", response.message, "success");
-                        setTimeout(() => loadUsers(), 1000);
-                    } else {
-                        Swal.fire("Error", response.message || "Something went wrong", "error");
-                    }
-                },
-                error: function() {
-                    Swal.fire("Error", "Failed to update user status.", "error");
-                }
-            });
-        }
+  // Confirm 
+  $("#confirmOrder").on("click", function () {
+    const address = $("#shippingAddress").val().trim();
+    const payment = $("#paymentMode").val();
+
+    if (!address || !payment) {
+      toast("Please fill in both address and payment method.", "#ff5252");
+      return;
+    }
+
+    const selectedIds = [];
+    $(".select-item:checked").each(function () {
+      selectedIds.push($(this).data("id"));
     });
-}
 
-
----
-
-🧠 What Happens Here
-
-1. When admin clicks the Block/Unblock button,
-this function is triggered with userId and currentStatus.
-
-
-2. A SweetAlert confirmation box appears.
-
-
-3. On confirmation → an AJAX POST request is sent to servlet.
-
-
-4. Servlet updates DB (we’ll handle next).
-
-
-5. On success → SweetAlert “Success!” + table refresh.
-
-
-
-
----
-
-Would you like me to proceed with the Servlet (AdminDashboardServlet) implementation next?
-
-Perfect 👌 — here’s the Servlet part for the Block/Unblock user action in your existing
-AdminDashboardServlet.java.
-
-You’ll place this inside your main doPost() method (since the frontend sends a POST request).
-
-
----
-
-✅ AdminDashboardServlet.java (POST handling)
-
-@Override
-protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
-    response.setContentType("application/json");
-    PrintWriter out = response.getWriter();
-    Gson gson = new Gson();
-
-    String action = request.getParameter("action");
-    Map<String, Object> jsonResponse = new HashMap<>();
-
-    try {
-        if ("toggleUserStatus".equals(action)) {
-            int userId = Integer.parseInt(request.getParameter("userId"));
-            String currentStatus = request.getParameter("currentStatus");
-
-            boolean updated = adminService.toggleUserStatus(userId, currentStatus);
-
-            if (updated) {
-                jsonResponse.put("success", true);
-                jsonResponse.put("message", currentStatus.equals("Active")
-                        ? "User has been blocked successfully."
-                        : "User has been unblocked successfully.");
-            } else {
-                jsonResponse.put("success", false);
-                jsonResponse.put("message", "Failed to update user status.");
-            }
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/OrderServlet",
+      method: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        cartIds: selectedIds,
+        address: address,
+        paymentMode: payment
+      }),
+      success: function (res) {
+        if (res.success) {
+          $("#orderModal").addClass("hidden");
+          Swal.fire({
+            title: "Order Placed!",
+            text: "Your order has been placed successfully.",
+            icon: "success",
+            confirmButtonColor: "#ff7f50",
+          }).then(() => {
+            window.location.href = "restaurant.html";
+          });
+        } else {
+          toast(res.message || "Failed to place order.", "#ff5252");
         }
-
-    } catch (Exception e) {
-        e.printStackTrace();
-        jsonResponse.put("success", false);
-        jsonResponse.put("message", "An error occurred: " + e.getMessage());
-    }
-
-    out.print(gson.toJson(jsonResponse));
-    out.flush();
-}
+      },
+      error: function () {
+        toast("Server error while placing order.", "#ff5252");
+      }
+    });
+  });
 
 
----
-
-✅ AdminService.java
-
-Add this function:
-
-public boolean toggleUserStatus(int userId, String currentStatus) {
-    String newStatus = currentStatus.equals("Active") ? "Blocked" : "Active";
-    return adminDao.updateUserStatus(userId, newStatus);
-}
-
-
----
-
-✅ AdminDao.java
-
-Add the actual DB update logic:
-
-public boolean updateUserStatus(int userId, String newStatus) {
-    String query = "UPDATE users SET status = ? WHERE user_id = ?";
-    try (Connection conn = DBConnection.getConnection();
-         PreparedStatement ps = conn.prepareStatement(query)) {
-        ps.setString(1, newStatus);
-        ps.setInt(2, userId);
-        return ps.executeUpdate() > 0;
-    } catch (SQLException e) {
-        e.printStackTrace();
-        return false;
-    }
-}
-
-
----
-
-✅ SQL Table Reference
-
-Make sure your users table contains a column:
-
-status VARCHAR(10) DEFAULT 'Active'
-
-
----
-
-🧠 Flow Summary
-
-1. Admin clicks Block/Unblock → AJAX sends userId + currentStatus.
-
-
-2. Servlet → calls AdminService.toggleUserStatus().
-
-
-3. Service → calls AdminDao.updateUserStatus().
-
-
-4. DAO → updates DB, returns success/failure.
-
-
-5. Servlet sends back JSON → SweetAlert shows success and reloads table.
-
-
-
-
----
-
-Would you like to move next to Delete User functionality?
+in ui after select payment upi just extend that model and give one input for upi id if he clicks credit and debit card show one model ask credit/debit cart details but no need to store data just for user experience note:our project should work fine
