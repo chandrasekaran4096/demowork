@@ -1,89 +1,54 @@
-  <!-- Payment & Address Modal -->
-<div id="orderModal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-  <div class="bg-gray-900 text-white rounded-2xl p-8 w-full max-w-md shadow-xl">
-    <h2 class="text-2xl font-bold text-center mb-6 text-orange-400">Confirm Your Order</h2>
-
-    <div class="mb-4">
-      <label class="block mb-1 text-gray-300">Shipping Address</label>
-      <textarea id="shippingAddress" class="w-full p-3 rounded bg-gray-800 border border-gray-700 focus:border-orange-500" rows="3" placeholder="Enter your full address"></textarea>
+ <div id="card-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+        <div class="bg-gray-900 text-white rounded-2xl p-8 w-full max-w-md shadow-xl">
+            <h3 class="text-xl font-bold text-center mb-4 text-orange-400">Enter Card Details</h3>
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-300">Card Number</label>
+                <input type="text" id="cardNumber" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="Enter card number">
+            </div>
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-300">Card Holder Name</label>
+                <input type="text" id="cardHolderName" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="Enter card holder name">
+            </div>
+            <div class="flex justify-between gap-4 mb-4">
+                <div>
+                    <label class="block mb-1 text-gray-300">Expiry Date</label>
+                    <input type="text" id="expiryDate" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="MM/YY">
+                </div>
+                <div>
+                    <label class="block mb-1 text-gray-300">CVV</label>
+                    <input type="text" id="cvv" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="***">
+                </div>
+            </div>
+            <div class="flex justify-between mt-6">
+                <button id="cancelCard" class="bg-gray-700 px-5 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
+                <button id="submitCard" class="bg-orange-500 px-5 py-2 rounded-lg font-semibold hover:bg-orange-600">Submit</button>
+            </div>
+        </div>
     </div>
 
-    <div class="mb-4">
-      <label class="block mb-1 text-gray-300">Payment Method</label>
-      <select id="paymentMode" class="w-full p-3 rounded bg-gray-800 border border-gray-700 focus:border-orange-500">
-        <option value="">Select Payment Method</option>
-        <option value="Cash on Delivery">Cash on Delivery</option>
-        <option value="UPI">UPI</option>
-        <option value="Credit/Debit Card">Credit/Debit Card</option>
-      </select>
-    </div>
+  // Cancel Card Modal
+$("#cancelCard").on("click", function () {
+    $("#card-modal").addClass("hidden");
+    $("#paymentMode").val(""); 
+});
 
-    <div class="flex justify-between mt-6">
-      <button id="cancelOrder" class="bg-gray-700 px-5 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
-      <button id="confirmOrder" class="bg-orange-500 px-5 py-2 rounded-lg font-semibold hover:bg-orange-600">Confirm Order</button>
-    </div>
-  </div>
-</div>
+// Confirm Card details
+$("#submitCard").on("click", function () {
+    const cardNumber = $("#cardNumber").val().trim();
+    const cardHolderName = $("#cardHolderName").val().trim();
+    const expiryDate = $("#expiryDate").val().trim();
+    const cvv = $("#cvv").val().trim();
 
-// Place Order
-  $("#placeOrder").on("click", function () {
-    const selectedItems = $(".select-item:checked");
-    if (selectedItems.length === 0) {
-      toast("Please select at least one item.", "#ff5252");
-      return;
-    }
-    $("#orderModal").removeClass("hidden");
-  });
-
-  // Cancel 
-  $("#cancelOrder").on("click", function () {
-    $("#orderModal").addClass("hidden");
-  });
-
-  // Confirm 
-  $("#confirmOrder").on("click", function () {
-    const address = $("#shippingAddress").val().trim();
-    const payment = $("#paymentMode").val();
-
-    if (!address || !payment) {
-      toast("Please fill in both address and payment method.", "#ff5252");
-      return;
+    // Basic validation for user experience
+    if (!cardNumber || !cardHolderName || !expiryDate || !cvv) {
+        toast("Please fill in all card details.", "#ff5252");
+        return;
     }
 
-    const selectedIds = [];
-    $(".select-item:checked").each(function () {
-      selectedIds.push($(this).data("id"));
-    });
-
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/OrderServlet",
-      method: "POST",
-      contentType: "application/json",
-      data: JSON.stringify({
-        cartIds: selectedIds,
-        address: address,
-        paymentMode: payment
-      }),
-      success: function (res) {
-        if (res.success) {
-          $("#orderModal").addClass("hidden");
-          Swal.fire({
-            title: "Order Placed!",
-            text: "Your order has been placed successfully.",
-            icon: "success",
-            confirmButtonColor: "#ff7f50",
-          }).then(() => {
-            window.location.href = "restaurant.html";
-          });
-        } else {
-          toast(res.message || "Failed to place order.", "#ff5252");
-        }
-      },
-      error: function () {
-        toast("Server error while placing order.", "#ff5252");
-      }
-    });
-  });
+    $("#card-modal").addClass("hidden");
+    toast("Card details confirmed.", "#4caf50");
+});
 
 
-in ui after select payment upi just extend that model and give one input for upi id if he clicks credit and debit card show one model ask credit/debit cart details but no need to store data just for user experience note:our project should work fine
+can you do front ent validation on credit/debit cart while typing itself below the input box we have to tell in red and green color
+    
