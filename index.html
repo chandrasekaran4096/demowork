@@ -1,54 +1,569 @@
- <div id="card-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-        <div class="bg-gray-900 text-white rounded-2xl p-8 w-full max-w-md shadow-xl">
-            <h3 class="text-xl font-bold text-center mb-4 text-orange-400">Enter Card Details</h3>
-            <div class="mb-4">
-                <label class="block mb-1 text-gray-300">Card Number</label>
-                <input type="text" id="cardNumber" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="Enter card number">
-            </div>
-            <div class="mb-4">
-                <label class="block mb-1 text-gray-300">Card Holder Name</label>
-                <input type="text" id="cardHolderName" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="Enter card holder name">
-            </div>
-            <div class="flex justify-between gap-4 mb-4">
-                <div>
-                    <label class="block mb-1 text-gray-300">Expiry Date</label>
-                    <input type="text" id="expiryDate" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="MM/YY">
-                </div>
-                <div>
-                    <label class="block mb-1 text-gray-300">CVV</label>
-                    <input type="text" id="cvv" class="w-full p-3 rounded bg-gray-800 border border-gray-700" placeholder="***">
-                </div>
-            </div>
-            <div class="flex justify-between mt-6">
-                <button id="cancelCard" class="bg-gray-700 px-5 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
-                <button id="submitCard" class="bg-orange-500 px-5 py-2 rounded-lg font-semibold hover:bg-orange-600">Submit</button>
-            </div>
-        </div>
-    </div>
+package com.bite.filter;
 
-  // Cancel Card Modal
-$("#cancelCard").on("click", function () {
-    $("#card-modal").addClass("hidden");
-    $("#paymentMode").val(""); 
-});
+import java.io.IOException;
+import javax.servlet.*;
+import javax.servlet.http.*;
+import com.bite.model.User;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
 
-// Confirm Card details
-$("#submitCard").on("click", function () {
-    const cardNumber = $("#cardNumber").val().trim();
-    const cardHolderName = $("#cardHolderName").val().trim();
-    const expiryDate = $("#expiryDate").val().trim();
-    const cvv = $("#cvv").val().trim();
+public class SessionFilter implements Filter {
+    private static final Logger logger = LoggerUtil.getLogger(SessionFilter.class);
 
-    // Basic validation for user experience
-    if (!cardNumber || !cardHolderName || !expiryDate || !cvv) {
-        toast("Please fill in all card details.", "#ff5252");
-        return;
+    @Override
+    public void init(FilterConfig filterConfig) throws ServletException {
+        logger.info("SessionFilter initialized");
     }
 
-    $("#card-modal").addClass("hidden");
-    toast("Card details confirmed.", "#4caf50");
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        
+        HttpServletRequest req = (HttpServletRequest) request;
+        HttpServletResponse resp = (HttpServletResponse) response;
+        
+        String uri = req.getRequestURI();
+        String contextPath = req.getContextPath();
+        String page = uri.substring(contextPath.length());
+        
+        logger.debug("SessionFilter - Requested URI: " + page);
+        
+        HttpSession session = req.getSession(false);
+        User user = (session != null) ? (User) session.getAttribute("user") : null;
+        
+        // Public pages accessible without login
+        if (isPublicPage(page)) {
+            //if logged in user tries to access login/register, redirect to their dashboard
+            if (user != null && (page.contains("login.html") || page.contains("register.html"))) {
+                logger.info("loggedin user redirected from auth page");
+                resp.sendRedirect(contextPath + getDashboardForRole(user.getRole()));
+                return;
+            }
+            chain.doFilter(request, response);
+            return;
+        }
+        
+        //Protected pages require authentication
+        if (user == null) {
+            logger.warn("âœ… TEST 9/10: Unauthenticated access blocked: " + page);
+            resp.sendRedirect(contextPath + "/HTML/login.html");
+            return;
+        }
+        
+        //check if user is blocked immediately invalidate and redirect
+        if ("Blocked".equalsIgnoreCase(user.getStatus())) {
+            logger.warn("Blocked user session invalidated: " + user.getEmail());
+            session.invalidate();
+            resp.sendRedirect(contextPath + "/HTML/login.html?blocked=true");
+            return;
+        }
+        String userRole = user.getRole();
+        
+        //customer trying to access restaurant owner pages
+        if (isRestaurantPage(page) && !"restaurant".equalsIgnoreCase(userRole)) {
+            logger.warn("non restaurant owner blocked: " + user.getEmail());
+            resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+            return;
+        }
+        
+        //Restaurant owner or SuperAdmin trying to access customer pages
+        if (isCustomerPage(page) && !"customer".equalsIgnoreCase(userRole)) {
+            logger.warn("non customer blocked from customer pages: " + user.getEmail());
+            resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+            return;
+        }
+        
+        // non admin trying to access admin pages
+        if (isSuperAdminPage(page) && !"superadmin".equalsIgnoreCase(userRole)) {
+            logger.warn("non admin blocked from admin pages: " + user.getEmail());
+            resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+            return;
+        }
+        
+        logger.debug("access granted to: " + page + " for role: " + userRole);
+        chain.doFilter(request, response);
+    }
+    
+    private boolean isPublicPage(String page) {
+        return page.equals("/") || 
+               page.equals("/index.html") ||
+               page.contains("/login.html") ||
+               page.contains("/register.html") ||
+               page.contains("/user") ||
+               page.contains("/CSS/") ||
+               page.contains("/js/") ||
+               page.contains("/Asserts/") ||
+               page.contains("/Plugins/") ||
+               page.endsWith(".css") ||
+               page.endsWith(".js") ||
+               page.endsWith(".mp4") ||
+               page.endsWith(".jpg") ||
+               page.endsWith(".png") ||
+               page.endsWith(".gif");
+    }
+    
+    private boolean isCustomerPage(String page) {
+        return page.contains("/restaurant.html") ||
+               page.contains("/menu.html") ||
+               page.contains("/cart.html") ||
+               page.contains("/orders.html") ||
+               (page.contains("/profile.html") && !page.contains("admin"));
+    }
+    
+    private boolean isRestaurantPage(String page) {
+        return page.contains("/restaurantdashboard.html") ||
+               page.contains("/adminProfile.html");
+    }
+    
+    private boolean isSuperAdminPage(String page) {
+        return page.contains("/superAdmin.html") ||
+               page.contains("/superAdminProfile.html");
+    }
+    
+    private String getDashboardForRole(String role) {
+        if ("superadmin".equalsIgnoreCase(role)) {
+            return "/HTML/superAdmin.html";
+        } else if ("restaurant".equalsIgnoreCase(role)) {
+            return "/HTML/restaurantdashboard.html";
+        } else {
+            return "/HTML/restaurant.html";
+        }
+    }
+
+    @Override
+    public void destroy() {
+        logger.info("SessionFilter destroyed");
+    }
+}
+
+$(document).ready(function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('blocked') === 'true') {
+        Swal.fire({
+            icon: 'error',
+            title: 'Account Blocked',
+            text: 'Your account has been blocked. Please contact administrator.',
+            confirmButtonColor: '#f97316',
+            allowOutsideClick: false
+        }).then(() => {
+            window.history.replaceState({}, document.title, window.location.pathname);
+        });
+    }
+    
+    $('#loginForm').on('submit', function(e) {
+        e.preventDefault(); 
+        const email = $('input[name="email"]').val().trim();
+        const password = $('input[name="password"]').val().trim();
+        
+        if(email === "" || password === "") {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Missing Information',
+                text: 'Please enter both email and password!',
+                confirmButtonColor: '#f97316'
+            });
+            return;
+        }
+        
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if(!emailPattern.test(email)){
+            Swal.fire({
+                icon: 'error',
+                title: 'Invalid Email',
+                text: 'Please enter a valid email address!',
+                confirmButtonColor: '#f97316'
+            });
+            return;
+        }
+        
+        $.ajax({
+            url: 'http://localhost:8080/BiteBudddy/user',   
+            type: 'POST',
+            data: $(this).serialize() + '&action=login',
+            dataType: 'json',
+            success: function(response){
+                if(response.status === 'success'){
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Login Successful!',
+                        text: 'Redirecting to dashboard...',
+                        showConfirmButton: false,
+                        timer: 1500
+                    });
+                    setTimeout(() => {
+                        window.location.href = response.redirect;
+                    }, 1500);
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Login Failed',
+                        text: response.message,
+                        confirmButtonColor: '#f97316'
+                    });
+                }
+            },
+            error: function(xhr, status, error){
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Server Error',
+                    text: 'Unable to connect to server. Please try again.',
+                    confirmButtonColor: '#f97316'
+                });
+            }
+        });
+    });
+});
+
+restaurant.js
+$(document).ready(function () {
+
+  let allRestaurants = [];
+  function loadPopularFoods() {
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/FoodSearchServlet?action=popular",
+      method: "GET",
+      dataType: "json",
+      success: function (data) {
+        renderFoodCategories(data);
+      },
+      error: function (xhr) {
+        console.error("Failed to load food categories", xhr);
+      }
+    });
+  }
+  
+  function renderFoodCategories(categories) {
+    const container = $("#foodCategoriesContainer");
+    container.empty();
+
+    if (!categories || categories.length === 0) {
+      container.html('<p class="text-gray-400">No categories available</p>');
+      return;
+    }
+
+    categories.forEach(cat => {
+      const foodCard = `
+        <div class="food-card text-center" data-food="${cat.name}">
+          <img src="${cat.image}" alt="${cat.name}" class="mx-auto mb-3" />
+          <p class="text-white font-semibold text-lg">${cat.name}</p>
+        </div>
+      `;
+      container.append(foodCard);
+    });
+  }
+  
+  function searchFood(foodName) {
+    if (!foodName || foodName.trim() === "") {
+      Swal.fire({
+        icon: "warning",
+        title: "Empty Search",
+        text: "Please enter a food name to search",
+        confirmButtonColor: "#f97316"
+      });
+      return;
+    }
+
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/FoodSearchServlet?action=search",
+      method: "GET",
+      data: { foodName: foodName },
+      dataType: "json",
+      success: function (data) {
+        renderFoodResults(data);
+        $('html, body').animate({
+          scrollTop: $("#foodResultsContainer").offset().top - 100
+        }, 500);
+      },
+      error: function (xhr) {
+        if (xhr.status === 401) {
+          Swal.fire({
+            icon: "warning",
+            title: "Session Expired",
+            text: "Please log in again.",
+            confirmButtonColor: "#f97316"
+          }).then(() => {
+            window.location.href = "login.html";
+          });
+        } else {
+          Swal.fire({
+            icon: "error",
+            title: "Search Failed",
+            text: "Unable to search foods. Please try again.",
+            confirmButtonColor: "#f97316"
+          });
+        }
+      }
+    });
+  }
+
+  function renderFoodResults(foods) {
+    const container = $("#foodResultsContainer");
+    container.empty().removeClass("hidden");
+
+    if (!foods || foods.length === 0) {
+      container.html(`
+        <div class="col-span-full text-center py-10">
+          <p class="text-2xl text-gray-400">😔 No foods found</p>
+          <p class="text-gray-500 mt-2">Try searching for something else</p>
+        </div>
+      `);
+      return;
+    }
+
+    foods.forEach(food => {
+      const foodCard = `
+        <div class="food-result-card rounded-2xl p-5 card-hover">
+          <img src="${food.img}" alt="${food.itemName}" 
+               class="w-full h-48 object-cover rounded-xl mb-4 shadow-lg" />
+          
+          <h3 class="text-xl font-bold text-orange-400 mb-2">${food.itemName}</h3>
+          
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-sm bg-orange-500/20 text-orange-300 px-2 py-1 rounded-lg">
+              ${food.category || 'Food'}
+            </span>
+          </div>
+          
+          <p class="text-gray-400 text-sm mb-3 line-clamp-2">
+            ${food.description || 'Delicious food item'}
+          </p>
+          
+          <div class="flex items-center gap-2 mb-3 text-gray-300">
+            <svg class="w-4 h-4 text-orange-400" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
+            </svg>
+            <span class="text-sm">${food.restaurantName}</span>
+          </div>
+          
+          <div class="flex items-center justify-between mt-4">
+            <span class="text-2xl font-bold text-orange-300">₹${food.price.toFixed(2)}</span>
+            <button class="add-to-cart-btn bg-orange-500 hover:bg-orange-600 px-6 py-2 rounded-lg font-semibold transition" 
+                    data-id="${food.menuId}">
+              Add to Cart
+            </button>
+          </div>
+        </div>
+      `;
+      container.append(foodCard);
+    });
+  }
+
+  $(document).on("click", ".food-card", function () {
+    const foodName = $(this).data("food");
+    $("#foodSearchInput").val(foodName);
+    searchFood(foodName);
+  });
+
+  $("#foodSearchBtn").on("click", function () {
+    const foodName = $("#foodSearchInput").val().trim();
+    searchFood(foodName);
+  });
+
+  $("#foodSearchInput").on("keydown", function (e) {
+    if (e.key === "Enter") {
+      const foodName = $(this).val().trim();
+      searchFood(foodName);
+    }
+  });
+
+  $(document).on("click", ".add-to-cart-btn", function () {
+    const menuId = $(this).data("id");
+
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=add",
+      method: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({ menu_id: menuId, quantity: 1 }),
+      success: function (res) {
+        if (res.conflict) {
+          Swal.fire({
+            title: "Replace Cart?",
+            text: res.message || "Your cart contains items from another restaurant. Replace them?",
+            icon: "warning",
+            showCancelButton: true,
+            confirmButtonText: "Yes, Replace",
+            cancelButtonText: "Cancel",
+            confirmButtonColor: "#f97316",
+          }).then((result) => {
+            if (result.isConfirmed) {
+              $.ajax({
+                url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=add",
+                method: "POST",
+                contentType: "application/json",
+                data: JSON.stringify({ menu_id: menuId, quantity: 1, replace: true }),
+                success: function (r2) {
+                  if (r2.status === "success") {
+                    Swal.fire({
+                      toast: true,
+                      icon: "success",
+                      title: "Cart replaced successfully!",
+                      position: "top-end",
+                      showConfirmButton: false,
+                      timer: 2000,
+                      timerProgressBar: true
+                    });
+                  } else {
+                    Swal.fire("Error", "Failed to add item.", "error");
+                  }
+                },
+                error: function () {
+                  Swal.fire("Error", "Error replacing cart.", "error");
+                }
+              });
+            }
+          });
+        } else {
+          if (res.status === "success") {
+            Swal.fire({
+              toast: true,
+              icon: "success",
+              title: "Item added to cart!",
+              position: "top-end",
+              showConfirmButton: false,
+              timer: 2000,
+              timerProgressBar: true
+            });
+          } else if (res.redirect) {
+            window.location.href = "/BiteBudddy/HTML/login.html";
+          } else {
+            Swal.fire("Error", res.message || "Failed to add item.", "error");
+          }
+        }
+      },
+      error: function () {
+        Swal.fire("Error", "Server error while adding item to cart.", "error");
+      }
+    });
+  });
+
+  function loadRestaurants(query = "") {
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/RestaurantServlet",
+      method: "GET",
+      data: { search: query },
+      dataType: "json",
+      success: function (data) {
+        if (data.status === "unauthorized") {
+          Swal.fire({
+            icon: "warning",
+            title: "Session expired",
+            text: "Please log in again.",
+            confirmButtonColor: "#f97316"
+          }).then(() => window.location.href = "/BiteBudddy/HTML/login.html");
+        } else if (data.status === "Blocked") {
+          Swal.fire({
+            icon: "warning",
+            title: "BLOCKED",
+            text: "You are Blocked Contact Customer care.",
+            confirmButtonColor: "#070606ff"
+          }).then(() => window.location.href = "/BiteBudddy/HTML/login.html");
+        }
+        allRestaurants = data;
+        renderRestaurants(data);
+      },
+      error: function (xhr) {
+        if (xhr.status === 403) {
+          Swal.fire({
+            title: "Access Denied",
+            text: "You don't have permission to access this page.",
+            icon: "error",
+            confirmButtonText: "Back to Login"
+          }).then(() => {
+            window.location.href = "login.html";
+          })
+        } 
+        else if (xhr.status === 401) {
+          Swal.fire({
+            icon: "warning",
+            title: "Session expired",
+            text: "Please log in again.",
+            confirmButtonColor: "#f97316"
+          }).then(() => window.location.href = "/BiteBudddy/HTML/login.html");
+        }
+        else {
+          alert("Failed to load restaurants. Please login again.");
+          window.location.href = "login.html";
+        } 
+      },
+    });
+  }
+
+  function renderRestaurants(list) {
+    $("#restaurantContainer").empty();
+    if (!list || list.length === 0) {
+      $("#restaurantContainer").html(
+        `<p class="text-center text-gray-400 text-lg col-span-full">No restaurants found.</p>`
+      );
+      return;
+    }
+
+    list.forEach((r) => {
+      $("#restaurantContainer").append(`
+        <a href="menu.html?restaurant_id=${r.restaurantId}">
+          <div class="fade-in bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-5 card-hover cursor-pointer">
+            <img src="${r.img}" alt="${r.name}" class="w-full h-48 object-cover rounded-xl mb-4">
+            <h3 class="text-2xl text-orange-500 font-semibold mb-2">${r.name}</h3>
+            <p class="text-gray-300"><strong>ETA:</strong> ${r.deliveryTime} mins</p>
+            <p class="text-gray-300"><strong>Address:</strong> ${r.address}</p>
+            <p class="text-gray-300"><strong>Cuisine:</strong> ${r.cuisineType}</p>
+            <p class="text-gray-300"><strong>Rating:</strong>  ${r.rating}</p>
+          </div>
+        </a>
+      `);
+    });
+  }
+
+  $("#searchInput").on("keyup", function () {
+    const query = $(this).val().toLowerCase().trim();
+    const filtered = allRestaurants.filter((r) =>
+      r.name.toLowerCase().includes(query)
+    );
+    renderRestaurants(filtered);
+  });
+
+  $("#logoutBtn").click(function () {
+    Swal.fire({
+      title: "Logout Confirmation",
+      text: "Are you sure you want to log out?",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: "#f97316",
+      cancelButtonColor: "#6b7280",
+      confirmButtonText: "Yes, Logout"
+    }).then((result) => {
+      if (result.isConfirmed) {
+        $.ajax({
+          url: "http://localhost:8080/BiteBudddy/user",
+          type: "POST",
+          data: { action: "logout" },
+          dataType: "json",
+          success: function (res) {
+            if (res.status === "success") {
+              Swal.fire({
+                icon: "success",
+                title: "Logged out!",
+                text: res.message,
+                showConfirmButton: false,
+                timer: 1500
+              });
+              setTimeout(() => {
+                window.location.href = res.redirect;
+              }, 1600);
+            } else {
+              Swal.fire("Error", res.message, "error");
+            }
+          },
+          error: function () {
+            Swal.fire("Error", "Server error during logout", "error");
+          }
+        });
+      }
+    });
+  });
+
+  loadPopularFoods();
+  loadRestaurants();
 });
 
 
-can you do front ent validation on credit/debit cart while typing itself below the input box we have to tell in red and green color
-    
+after user was blocked it shows bloked like that after i click ok it should be stay on login page but it not stay in login page it comes to restaurant page again shows blocked like that
