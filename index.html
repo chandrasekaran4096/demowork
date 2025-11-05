@@ -1,14 +1,531 @@
 $(document).ready(function () {
-  // Verify session
-
-  loadSection("dashboard");
-
-  $(".sidebar-link").on("click", function (e) {
-    e.preventDefault();
-    const section = $(this).data("section");
-    loadSection(section);
-  });
+  const $cartContainer = $("#cartContainer");
+  const $grandTotal = $("#grandTotal");
+  const $selectedCount = $("#selectedCount");
+  const $placeOrder = $("#placeOrder");
   
+  function toast(message, color = "#ff7f50") {
+    Toastify({
+      text: message,
+      duration: 3000,
+      close: true,
+      gravity: "top",
+      position: "right",
+      backgroundColor: color,
+      stopOnFocus: true,
+    }).showToast();
+  }
+
+  function loadCart() {
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/CartApiServlet",
+      method: "GET",
+      dataType: "json",
+      success: function (data) {
+        renderCart(data);
+        updateTotals();
+      },
+      error: function (xhr) {
+        if (xhr.status === 401) {
+          Swal.fire({
+            title: "Login Required",
+            text: "Please log in to view your cart.",
+            icon: "warning",
+            confirmButtonColor: "#ff7f50",
+          }).then(() => {
+            window.location.href = "login.html";
+          });
+        }
+        else if (xhr.status === 403) {
+          Swal.fire({
+            title: "Access Denied",
+            text: "You don't have permission to access this page.",
+            icon: "error",
+            confirmButtonText: "Back to Login"
+          }).then(() => {
+            window.location.href = "login.html";
+          });
+        }
+        else {
+          $cartContainer.html(`<p class="text-center text-red-400">Failed to load cart.</p>`);
+        }
+      },
+    });
+  }
+
+  function renderCart(items) {
+    $cartContainer.empty();
+    if (!items || items.length === 0) {
+      $cartContainer.html(`<p class="text-center text-gray-400">Your cart is empty.</p>`);
+      return;
+    }
+
+    items.forEach(item => {
+      const itemTotal = (item.price * item.quantity).toFixed(2);
+      const card = $(`
+        <div class="bg-white/5 border border-white/6 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-4 hover:scale-[1.02] transition-transform">
+          <div class="flex items-center gap-4 w-full md:w-3/4">
+            <input type="checkbox" class="select-item w-5 h-5 accent-orange-500" data-id="${item.cartId}">
+            <img src="${item.imagePath || '/assets/no-image.png'}" alt="${item.itemName}" class="cart-img shadow-lg">
+            <div class="flex-1">
+              <h3 class="text-lg font-semibold text-orange-300">${item.itemName}</h3>
+              <p class="text-sm text-gray-300">₹${item.price.toFixed(2)} Each</p>
+              <p class="text-sm text-gray-400 mt-1">Restaurant: ${item.name}</p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
+            <div class="flex items-center gap-2 bg-white/3 rounded-lg px-3 py-1">
+              <button class="decrease px-3 py-1 rounded bg-white/6 hover:bg-white/10" data-id="${item.cartId}">-</button>
+              <span class="quantity font-semibold" id="qty-${item.cartId}">${item.quantity}</span>
+              <button class="increase px-3 py-1 rounded bg-white/6 hover:bg-white/10" data-id="${item.cartId}">+</button>
+            </div>
+            <div class="text-right">
+              <p class="text-sm text-gray-300">Total</p>
+              <p class="text-lg font-bold"><span id="total-${item.cartId}">${itemTotal}</span></p>
+              <button class="remove mt-2 text-sm text-red-400 hover:text-red-500" data-id="${item.cartId}">Remove</button>
+            </div>
+          </div>
+        </div>
+      `);
+      $cartContainer.append(card);
+    });
+  }
+
+ 
+
+  function updateTotals() {
+    let total = 0;
+    let count = 0;
+    $(".select-item:checked").each(function () {
+      const id = $(this).data("id");
+      const qty = parseInt($(`#qty-${id}`).text(), 10);
+      const priceText = $(`#total-${id}`).text();
+      const price = parseFloat(priceText) / (qty || 1);
+      total += price * qty;
+      count++;
+    });
+    $grandTotal.text(total.toFixed(2));
+    $selectedCount.text(count);
+    $placeOrder.prop("disabled", count === 0);
+  }
+
+  $cartContainer.on("click", ".increase", function () {
+    const cartId = $(this).data("id");
+    const $qtySpan = $(`#qty-${cartId}`);
+    let qty = parseInt($qtySpan.text(), 10);
+    qty++;
+    updateQuantityAjax(cartId, qty);
+  });
+
+  $cartContainer.on("click", ".decrease", function () {
+    const cartId = $(this).data("id");
+    const $qtySpan = $(`#qty-${cartId}`);
+    let qty = parseInt($qtySpan.text(), 10);
+    if (qty > 1) {
+      qty--;
+      updateQuantityAjax(cartId, qty);
+    }
+  });
+
+$cartContainer.on("click", ".remove", function () {
+    const cartId = $(this).data("id");
+
+    Swal.fire({
+      title: "Remove Item?",
+      text: "Do you really want to remove this item from your cart?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "#6b7280",
+      confirmButtonText: "Yes, remove it!"
+    }).then((result) => {
+      if (result.isConfirmed) {
+        $.ajax({
+          url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=delete",
+          method: "POST",
+          contentType: "application/json",
+          data: JSON.stringify({ cart_id: cartId }),
+          success: function (res) {
+            if (res.status === "success") {
+              toast("Item removed from cart!", "#4caf50");
+              loadCart();
+              if (typeof CartBadge !== 'undefined') {
+              CartBadge.refresh();
+            }
+            } else {
+              toast(res.message || "Failed to remove item.", "#ff5252");
+            }
+          },
+          error: function () {
+            toast("Server error while removing item.", "#ff5252");
+          }
+        });
+      }
+    });
+});
+
+  $cartContainer.on("change", ".select-item", updateTotals);
+
+function updateQuantityAjax(cartId, qty) {
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=update",
+      method: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({ cart_id: cartId, quantity: qty }),
+      success: function (res) {
+        if (res.status === "success") {
+          $(`#qty-${cartId}`).text(qty);
+          if (res.itemTotal !== undefined) {
+            $(`#total-${cartId}`).text(res.itemTotal.toFixed(2));
+          } else {
+            loadCart();
+          }
+          updateTotals();
+          if (typeof CartBadge !== 'undefined') {
+          CartBadge.refresh();
+        }
+          toast("Quantity updated!", "#4caf50");
+          
+        } else {
+          toast(res.message || "Failed to update quantity.", "#ff5252");
+        }
+      },
+      error: function () {
+        toast("Error updating quantity.", "#ff5252");
+      }
+    });
+}
+  $("#placeOrder").on("click", function () {
+    const selectedItems = $(".select-item:checked");
+    if (selectedItems.length === 0) {
+      toast("Please select at least one item.", "#ff5252");
+      return;
+    }
+    $("#orderModal").removeClass("hidden");
+  });
+
+  $("#cancelOrder").on("click", function () {
+    $("#orderModal").addClass("hidden");
+    resetAllValidation();
+  });
+
+  const validators = {
+    address: (val) => {
+      if (!val || val.trim().length < 10) return "Address must be at least 10 characters";
+      if (val.trim().length > 200) return "Address too long (max 200 characters)";
+      return "";
+    },
+    
+    upiId: (val) => {
+      if (!val || val.trim().length === 0) return "UPI ID is required";
+      const upiPattern = /^[a-zA-Z0-9._-]+@[a-zA-Z]{3,}$/;
+      if (!upiPattern.test(val.trim())) return "Invalid UPI ID format (e.g., Chandra@paytm)";
+      return "";
+    },
+    
+    cardNumber: (val) => {
+      if (!val || val.trim().length === 0) return "Card number is required";
+      const cleaned = val.replace(/\s/g, '');
+      if (!/^\d{16}$/.test(cleaned)) return "Card number must be 16 digits";
+      return "";
+    },
+    
+    cardHolderName: (val) => {
+      if (!val || val.trim().length === 0) return "Card holder name is required";
+      if (val.trim().length < 3) return "Name must be at least 3 characters";
+      if (!/^[a-zA-Z\s]+$/.test(val)) return "Name can only contain letters";
+      return "";
+    },
+    
+      expiryDate: (val) => {
+        if (!val || val.trim().length === 0) return "Expiry date is required";
+        const pattern = /^(0[1-9]|1[0-2])\/([0-9]{2})$/;
+        if (!pattern.test(val)) return "Format must be MM/YY";
+        
+        const [month, year] = val.split('/');
+        const expiry = new Date(2000 + parseInt(year), parseInt(month) - 1);
+        const now = new Date();
+        
+        if (expiry < now) return "Card has expired";
+        return "";
+      },
+    
+    cvv: (val) => {
+      if (!val || val.trim().length === 0) return "CVV is required";
+      if (!/^\d{3,4}$/.test(val)) return "CVV must be 3 or 4 digits";
+      return "";
+    }
+  };
+
+  function showValidation(inputId, errorMsg) {
+    const $input = $(`#${inputId}`); 
+    const $errorSpan = $input.next('.error-message');
+    
+    $input.removeClass('border-red-500 border-green-500 border-gray-700');
+    
+    if (errorMsg) {
+      $input.addClass('border-red-500');
+      if ($errorSpan.length) {
+        $errorSpan.text(errorMsg).show();
+      } else {
+        $input.after(`<small class="error-message text-red-400 text-xs mt-1 block">${errorMsg}</small>`);
+      }
+    } else if ($input.val().trim() !== '') {
+      $input.addClass('border-green-500');
+      if ($errorSpan.length) {
+        $errorSpan.hide();
+      }
+    } else {
+      $input.addClass('border-gray-700');
+      if ($errorSpan.length) {
+        $errorSpan.hide();
+      }
+    }
+  }
+
+  function resetValidation(inputId) {
+    const $input = $(`#${inputId}`);
+    const $errorSpan = $input.next('.error-message');
+    
+    $input.removeClass('border-red-500 border-green-500').addClass('border-gray-700');
+    if ($errorSpan.length) {
+      $errorSpan.hide();
+    }
+  }
+
+  function resetAllValidation() {
+    ['shippingAddress', 'upiId', 'cardNumber', 'cardHolderName', 'expiryDate', 'cvv'].forEach(id => {
+      resetValidation(id);
+    });
+  }
+
+  $("#shippingAddress").on("input", function() {
+    const val = $(this).val();
+    if (val.length === 0) {
+      resetValidation("shippingAddress");
+    } else {
+      const error = validators.address(val);
+      showValidation("shippingAddress", error);
+    }
+  });
+
+  $("#upiId").on("input", function() {
+    const val = $(this).val();
+    if (val.length === 0) {
+      resetValidation("upiId");
+    } else {
+      const error = validators.upiId(val);
+      showValidation("upiId", error);
+    }
+  });
+
+  $("#cardNumber").on("input", function() {
+    let val = $(this).val().replace(/\s/g, '');
+    let formatted = val.match(/.{1,4}/g)?.join(' ') || val;
+    $(this).val(formatted);
+    
+    if (val.length === 0) {
+      resetValidation("cardNumber");
+    } else {
+      const error = validators.cardNumber(val);
+      showValidation("cardNumber", error);
+    }
+  });
+
+  $("#cardHolderName").on("input", function() {
+    const val = $(this).val().toUpperCase();
+    $(this).val(val);
+    
+    if (val.length === 0) {
+      resetValidation("cardHolderName");
+    } else {
+      const error = validators.cardHolderName(val);
+      showValidation("cardHolderName", error);
+    }
+  });
+
+  $("#expiryDate").on("input", function() {
+    let val = $(this).val().replace(/\D/g, '');
+    if (val.length >= 2) {
+      val = val.slice(0, 2) + '/' + val.slice(2, 4);
+    }
+    $(this).val(val);
+    
+    if (val.length === 0) {
+      resetValidation("expiryDate");
+    } else {
+      const error = validators.expiryDate(val);
+      showValidation("expiryDate", error);
+    }
+  });
+
+  $("#cvv").on("input", function() {
+    let val = $(this).val().replace(/\D/g, '').slice(0, 4);
+    $(this).val(val);
+    
+    if (val.length === 0) {
+      resetValidation("cvv");
+    } else {
+      const error = validators.cvv(val);
+      showValidation("cvv", error);
+    }
+  });
+
+  // Payment mode change
+  $("#paymentMode").on("change", function () {
+    const selectedPayment = $(this).val();
+    const upiInput = $("#upi-input");
+    const cardModal = $("#card-modal");
+
+    resetValidation("upiId");
+    resetValidation("cardNumber");
+    resetValidation("cardHolderName");
+    resetValidation("expiryDate");
+    resetValidation("cvv");
+
+    upiInput.addClass("hidden");
+    cardModal.addClass("hidden");
+
+    if (selectedPayment === "UPI") {
+      upiInput.removeClass("hidden");
+      $("#upiId").val('').focus();
+    } else if (selectedPayment === "Credit/Debit Card") {
+      cardModal.removeClass("hidden");
+      $("#cardNumber").val('').focus();
+    }
+  });
+
+  // Card modal handlers
+  $("#cancelCard").on("click", function () {
+    $("#card-modal").addClass("hidden");
+    $("#paymentMode").val("");
+    
+    $("#cardNumber, #cardHolderName, #expiryDate, #cvv").val("");
+    resetValidation("cardNumber");
+    resetValidation("cardHolderName");
+    resetValidation("expiryDate");
+    resetValidation("cvv");
+  });
+
+  $("#submitCard").on("click", function () {
+    const cardNumber = $("#cardNumber").val().trim();
+    const cardHolderName = $("#cardHolderName").val().trim();
+    const expiryDate = $("#expiryDate").val().trim();
+    const cvv = $("#cvv").val().trim();
+
+    const errors = {
+      cardNumber: validators.cardNumber(cardNumber),
+      cardHolderName: validators.cardHolderName(cardHolderName),
+      expiryDate: validators.expiryDate(expiryDate),
+      cvv: validators.cvv(cvv)
+    };
+
+    showValidation("cardNumber", errors.cardNumber);
+    showValidation("cardHolderName", errors.cardHolderName);
+    showValidation("expiryDate", errors.expiryDate);
+    showValidation("cvv", errors.cvv);
+
+    if (Object.values(errors).some(e => e !== "")) {
+      toast("Please fix all card validation errors", "#ff5252");
+      return;
+    }
+
+    $("#card-modal").addClass("hidden");
+    toast("Card details confirmed", "#4caf50");
+  });
+
+  $("#confirmOrder").on("click", function () {
+    const address = $("#shippingAddress").val().trim();
+    const payment = $("#paymentMode").val();
+
+    // Validate address and payment
+    const addressError = validators.address(address);
+    const paymentError = !payment ? "Please select a payment method" : "";
+
+    showValidation("shippingAddress", addressError);
+
+    if (addressError || paymentError) {
+      if (paymentError) {
+        toast(paymentError, "#ff5252");
+      } else {
+        toast("Please fix all validation errors", "#ff5252");
+      }
+      return;
+    }
+
+    if (payment === "UPI") {
+      const upiError = validators.upiId($("#upiId").val().trim());
+      showValidation("upiId", upiError);
+      
+      if (upiError) {
+        toast("Please enter a valid UPI ID", "#ff5252");
+        return;
+      }
+    } else if (payment === "Credit/Debit Card") {
+      const cardNumber = $("#cardNumber").val().trim();
+      const cardHolderName = $("#cardHolderName").val().trim();
+      const expiryDate = $("#expiryDate").val().trim();
+      const cvv = $("#cvv").val().trim();
+
+      const cardErrors = {
+        cardNumber: validators.cardNumber(cardNumber),
+        cardHolderName: validators.cardHolderName(cardHolderName),
+        expiryDate: validators.expiryDate(expiryDate),
+        cvv: validators.cvv(cvv)
+      };
+
+      if (Object.values(cardErrors).some(e => e !== "")) {
+        toast("Please verify your card details", "#ff5252");
+        return;
+      }
+    }
+
+    // get selected cart items
+    const selectedIds = [];
+    $(".select-item:checked").each(function () {
+      selectedIds.push($(this).data("id"));
+    });
+
+    if (selectedIds.length === 0) {
+      toast("No items selected for order", "#ff5252");
+      return;
+    }
+
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/OrderServlet",
+      method: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        cartIds: selectedIds,
+        address: address,
+        paymentMode: payment
+      }),
+      dataType: "json",
+      success: function (res) {
+        if (res.status === "success" && res.data === true) {
+          $("#orderModal").addClass("hidden");
+          
+          Swal.fire({
+            title: "Order Placed!",
+            text: res.message || "Your order has been placed successfully.",
+            icon: "success",
+            confirmButtonColor: "#ff7f50",
+            confirmButtonText: "Continue Shopping"
+          }).then(() => {
+            window.location.href = "restaurant.html";
+          });
+        } else {
+          toast(res.message || "Failed to place order.", "#ff5252");
+        }
+      },
+      error: function (xhr, status, error) {
+        console.error("Order error:", error);
+        toast("Server error while placing order.", "#ff5252");
+      }
+    });
+  });
+
   $("#logoutBtn").click(function() {
     Swal.fire({
       title: "Logout Confirmation",
@@ -48,841 +565,6 @@ $(document).ready(function () {
       }
     });
   });
+
+  loadCart();
 });
-
-function loadSection(section) {
-  $("#content-area").html('<div class="text-center text-gray-500">Loading...</div>');
-
-  if (section === "dashboard") {
-    loadDashboard();
-  } else if (section === "restaurants") {
-    loadRestaurants();
-  } else if (section === "users") {
-    loadUsers();
-  } else if (section === "addAdmin") {
-    loadAddAdmin();
-  } else if (section === "profile") {
-    loadProfile();
-  }
-}
-
-// dashboard Section
-function loadDashboard() {
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "dashboard" },
-    success: function (response) {
-      let data = response; 
-      if (typeof response === "string") {
-        data = JSON.parse(response);
-      }
-
-      const dashboardHTML = `
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Users</p>
-            <h2 class="text-2xl font-bold">${data.totalUsers}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Restaurants</p>
-            <h2 class="text-2xl font-bold">${data.totalRestaurants}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Orders</p>
-            <h2 class="text-2xl font-bold">${data.totalOrders}</h2>
-          </div>
-          <div class="bg-white p-4 rounded-lg shadow text-center">
-            <p class="text-gray-500">Total Revenue</p>
-            <h2 class="text-2xl font-bold">₹${data.totalRevenue}</h2>
-          </div>
-        </div>
-
-        <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div class="bg-white p-6 rounded-lg shadow">
-            <h3 class="text-lg font-semibold mb-4">Monthly Revenue Trend</h3>
-            <canvas id="revenueChart" height="200"></canvas>
-          </div>
-
-          <div class="bg-white p-6 rounded-lg shadow">
-            <h3 class="text-lg font-semibold mb-4">Orders by Restaurant</h3>
-            <canvas id="ordersChart" height="200"></canvas>
-          </div>
-        </div>
-      `;
-      $("#content-area").html(dashboardHTML);
-      renderCharts(data);
-    },
-    error: function (xhr) {
-      if (xhr.status === 401) {
-        Swal.fire({
-          title: "Session Expired",
-          text: "Please log in again.",
-          icon: "warning",
-          confirmButtonText: "Go to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-      } else if (xhr.status === 403) {
-        Swal.fire({
-          title: "Access Denied",
-          text: "You don't have permission to access this page.",
-          icon: "error",
-          confirmButtonText: "Back to Login"
-        }).then(() => {
-          window.location.href = "login.html";
-        });
-      } else {
-        $("#content-area").html("<p class='text-center text-red-500'>Failed to load dashboard data.</p>");
-      }
-    },
-  });
-}
-
-function renderCharts(data) {
-  const ctx1 = document.getElementById("revenueChart").getContext("2d");
-  const ctx2 = document.getElementById("ordersChart").getContext("2d");
-
-  // revenue Line Chart 
-  if (!data.monthlyRevenue || data.monthlyRevenue.length === 0) {
-    $("#revenueChart").replaceWith("<p class='text-gray-500 text-center'>No revenue data available</p>");
-  } else {
-    new Chart(ctx1, {
-      type: "line",
-      data: {
-        labels: data.monthlyRevenue.map(r => r.month),
-        datasets: [{
-          label: "Monthly Revenue (₹)",
-          data: data.monthlyRevenue.map(r => r.amount),
-          borderColor: "#3b82f6",
-          backgroundColor: "rgba(59, 130, 246, 0.2)",
-          fill: true,
-          tension: 0.3,
-          borderWidth: 2
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: true },
-          tooltip: { enabled: true }
-        },
-        scales: {
-          y: { beginAtZero: true }
-        }
-      }
-    });
-  }
-
-  // irders Pie Chart
-  if (!data.ordersByRestaurant || data.ordersByRestaurant.length === 0) {
-    $("#ordersChart").replaceWith("<p class='text-gray-500 text-center'>No order data available</p>");
-  } else {
-    // new Chart(ctx2, {
-    //   type: "pie",
-    //   data: {
-    //     labels: data.ordersByRestaurant.map(o => o.restaurantName),
-    //     datasets: [{
-    //       data: data.ordersByRestaurant.map(o => o.orderCount),
-    //       backgroundColor: ["#f87171", "#60a5fa", "#34d399", "#fbbf24", "#a78bfa", "#f472b6"]
-    //     }]
-    //   },
-    //   options: {
-    //     responsive: true,
-    //     plugins: {
-    //       legend: { position: "bottom" },
-    //       tooltip: { enabled: true }
-    //     }
-    //   }
-    // });
-    new Chart(ctx2, {
-  type: "pie",
-  data: {
-    labels: data.ordersByRestaurant.map(o => o.restaurantName),
-    datasets: [{
-      data: data.ordersByRestaurant.map(o => o.orderCount),
-      backgroundColor: data.ordersByRestaurant.map(() => getRandomColor())
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: {
-      legend: { position: "bottom" },
-      tooltip: { enabled: true }
-    }
-  }
-});
-
-function getRandomColor() {
-  return `hsl(${Math.floor(Math.random() * 360)}, 70%, 60%)`;
-}
-
-  }
-}
-
-// restautant section
-function loadRestaurants() {
-  $("#content-area").html('<div class="text-center text-gray-500 py-10">Loading restaurants...</div>');
-
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "restaurants" },
-    success: function (response) {
-      let data = response;
-      if (typeof response === "string") {
-        data = JSON.parse(response);
-      }
-
-      if (!data.restaurants || data.restaurants.length === 0) {
-        $("#content-area").html("<p class='text-center text-gray-500 py-10'>No restaurants found.</p>");
-        return;
-      }
-
-      let tableHTML = `
-        <div class="bg-white p-6 rounded-lg shadow">
-          <h2 class="text-2xl font-semibold mb-4">Restaurants List</h2>
-          <table id="restaurantsTable" class="min-w-full border border-gray-200 display">
-            <thead class="bg-gray-100">
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Owner</th>
-                <th>Email</th>
-                <th>Phone</th>
-                <th>Status</th>
-                <th>Orders</th>
-                <th>Revenue (₹)</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.restaurants
-                .map(
-                  (r) => `
-                <tr class="text-center border-b">
-                  <td>${r.restaurantId}</td>
-                  <td>${r.restaurantName}</td>
-                  <td>${r.ownerName}</td>
-                  <td>${r.email}</td>
-                  <td>${r.phone}</td>
-                  <td>
-                    <span class="px-2 py-1 rounded text-sm font-medium ${
-                      r.status === "Active"
-                        ? "bg-green-100 text-green-700"
-                        : "bg-red-100 text-red-700"
-                    }">${r.status}</span>
-                  </td>
-                  <td>${r.totalOrders}</td>
-                  <td>₹${r.totalRevenue.toFixed(2)}</td>
-                  <td>
-                    <button class="view-btn bg-blue-500 text-white px-2 py-1 rounded text-sm" data-id="${r.restaurantId}">View</button>
-                    <button class="toggle-btn ${
-                      r.status === "Active"
-                        ? "bg-yellow-500"
-                        : "bg-green-500"
-                    } text-white px-2 py-1 rounded text-sm" data-id="${r.restaurantId}" data-status="${r.status}">
-                      ${r.status === "Active" ? "Deactivate" : "Activate"}
-                    </button>
-                    <button class="delete-btn bg-red-500 text-white px-2 py-1 rounded text-sm" data-id="${r.restaurantId}">Delete</button>
-                  </td>
-                </tr>`
-                )
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-
-      $("#content-area").html(tableHTML);
-      $("#restaurantsTable").DataTable();
-
-      $(".view-btn").on("click", function () {
-        const id = $(this).data("id");
-        viewRestaurantDetails(id);
-      });
-
-      $(".toggle-btn").on("click", function () {
-        const id = $(this).data("id");
-        const currentStatus = $(this).data("status");
-        toggleRestaurantStatus(id, currentStatus);
-      });
-
-      $(".delete-btn").on("click", function () {
-        const id = $(this).data("id");
-        deleteRestaurant(id);
-      });
-    },
-    error: function () {
-      $("#content-area").html("<p class='text-center text-red-500 py-10'>Failed to load restaurant data.</p>");
-    },
-  });
-}
-
-function toggleRestaurantStatus(id, currentStatus) {
-  const newStatus = currentStatus === "Active" ? "Inactive" : "Active";
-
-  Swal.fire({
-    title: `Change Status?`,
-    text: `Do you want to set this restaurant as ${newStatus}?`,
-    icon: "warning",
-    showCancelButton: true,
-    confirmButtonText: "Yes, Change"
-  }).then((result) => {
-    if (result.isConfirmed) {
-      $.ajax({
-        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-        method: "POST",
-        data: { action: "toggleRestaurantStatus", restaurantId: id, status: newStatus },
-        success: function (response) {
-          if (response.status === "success") {
-            Swal.fire("Updated!", response.message, "success");
-            loadRestaurants();
-          } else {
-            Swal.fire("Error", response.message || "Failed to update status", "error");
-          }
-        },
-        error: function () {
-          Swal.fire("Error", "Failed to update status.", "error");
-        }
-      });
-    }
-  });
-}
-
-function deleteRestaurant(id) {
-  Swal.fire({
-    title: "Delete Restaurant?",
-    text: "This action cannot be undone.",
-    icon: "warning",
-    showCancelButton: true,
-    confirmButtonColor: "#d33",
-    confirmButtonText: "Yes, Delete"
-  }).then((result) => {
-    if (result.isConfirmed) {
-      $.ajax({
-        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-        method: "POST",
-        data: { action: "deleteRestaurant", restaurantId: id },
-        success: function (response) {
-          if (response.status === "success") {
-            Swal.fire("Deleted!", response.message, "success");
-            loadRestaurants();
-          } else {
-            Swal.fire("Error", response.message || "Failed to delete restaurant", "error");
-          }
-        },
-        error: function () {
-          Swal.fire("Error", "Failed to delete restaurant.", "error");
-        }
-      });
-    }
-  });
-}
-
-
-
-function viewRestaurantDetails(id) {
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "viewRestaurant", restaurantId: id },
-    success: function (response) {
-      let data = typeof response === "string" ? JSON.parse(response) : response;
-
-      if (data.error) {
-        Swal.fire("Error", data.error, "error");
-        return;
-      }
-
-      let restaurantInfo = `
-        <div class="text-left p-5">
-          <div class="bg-gray-100 p-4 rounded-lg mb-5">
-            <h5 class="text-gray-800 mb-4 border-b-2 border-orange-500 pb-2 font-semibold">Restaurant Information</h5>
-            <div class="grid grid-cols-2 gap-3">
-              <div><span class="font-semibold text-gray-600">Owner:</span> <span class="text-gray-800">${data.ownerName}</span></div>
-              <div><span class="font-semibold text-gray-600">Email:</span> <span class="text-gray-800">${data.email}</span></div>
-              <div><span class="font-semibold text-gray-600">Phone:</span> <span class="text-gray-800">${data.phone}</span></div>
-              <div><span class="font-semibold text-gray-600">Status:</span> 
-                <span class="px-3 py-1 rounded-full text-xs font-semibold ${data.status === 'Active' ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}">
-                  ${data.status}
-                </span>
-              </div>
-              <div class="col-span-2"><span class="font-semibold text-gray-600">Address:</span> <span class="text-gray-800">${data.address}</span></div>
-            </div>
-          </div>
-
-          <div class="bg-yellow-100 p-4 rounded-lg mb-5">
-            <h5 class="text-gray-800 mb-4 border-b-2 border-yellow-500 pb-2 font-semibold">Business Statistics</h5>
-            <div class="grid grid-cols-2 gap-4">
-              <div class="bg-white p-4 rounded-lg text-center shadow">
-                <div class="text-sm text-gray-600 mb-2">Total Orders</div>
-                <div class="text-3xl font-bold text-orange-500">${data.totalOrders}</div>
-              </div>
-              <div class="bg-white p-4 rounded-lg text-center shadow">
-                <div class="text-sm text-gray-600 mb-2">Total Revenue</div>
-                <div class="text-3xl font-bold text-green-600">₹${data.totalRevenue.toFixed(2)}</div>
-              </div>
-            </div>
-          </div>
-      `;
-
-      let content = restaurantInfo;
-
-      if (data.recentOrders && data.recentOrders.length > 0) {
-        let ordersHtml = `
-          <div class="mt-5">
-            <h5 class="text-gray-800 mb-3 border-b-2 border-orange-500 pb-2 font-semibold">Recent Orders</h5>
-            <div class="overflow-x-auto">
-              <table class="min-w-full bg-white rounded-lg overflow-hidden">
-                <thead class="bg-orange-500 text-white">
-                  <tr>
-                    <th class="px-4 py-3 text-left">Order ID</th>
-                    <th class="px-4 py-3 text-left">Customer</th>
-                    <th class="px-4 py-3 text-right">Amount</th>
-                    <th class="px-4 py-3 text-center">Date</th>
-                    <th class="px-4 py-3 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${data.recentOrders.map((o, index) => `
-                    <tr class="${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'} border-b border-gray-200">
-                      <td class="px-4 py-3 font-semibold">#${o.orderId}</td>
-                      <td class="px-4 py-3">${o.customerName}</td>
-                      <td class="px-4 py-3 text-right font-semibold text-green-600">₹${o.amount.toFixed(2)}</td>
-                      <td class="px-4 py-3 text-center">${o.ordersDate}</td>
-                      <td class="px-4 py-3 text-center">
-                        <span class="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                          ${o.status}
-                        </span>
-                      </td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>`;
-        content += ordersHtml;
-      } else {
-        content += `<div class="p-5 bg-yellow-100 rounded-lg text-center text-yellow-800 mt-4">
-          <i class="fas fa-info-circle"></i> No recent orders found for this restaurant.
-        </div>`;
-      }
-
-      content += `</div>`; 
-
-      Swal.fire({
-        title: `<div class="text-orange-500 font-bold">${data.restaurantName}</div>`,
-        html: content,
-        width: 850,
-        confirmButtonText: "Close",
-        confirmButtonColor: "#ff6347",
-        showCloseButton: true
-      });
-    },
-    error: function () {
-      Swal.fire("Error", "Failed to load restaurant details.", "error");
-    }
-  });
-}
-
-function loadUsers() {
-  $("#content-area").html("<h4 class='text-center mt-4'>Loading users...</h4>");
-
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "users" },
-    success: function(response) {
-      if (response.users && response.users.length > 0) {
-        renderUsersTable(response.users);
-      } else {
-        $("#content-area").html("<p class='text-center mt-4 text-muted'>No users found.</p>");
-      }
-    },
-    error: function() {
-      $("#content-area").html("<p class='text-center mt-4 text-danger'>Failed to load users.</p>");
-    }
-  });
-}
-
-function renderUsersTable(users) {
-  let html = `
-    <div class="container mt-4">
-      <h1 class="mb-4 font-bold text-2xl">User Management</h1>
-      <table id="usersTable" class="table table-striped table-bordered">
-        <thead class="table-dark">
-          <tr>
-            <th>ID</th>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Phone</th>
-            <th>Role</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-  `;
-
-  users.forEach(u => {
-    let statusBadge = u.status === "Active"
-      ? `<span class="badge bg-green-100 px-2 py-1">Active</span>`
-      : `<span class="badge bg-red-100 px-2 py-1">Blocked</span>`;
-
-    html += `
-      <tr>
-        <td>${u.userid}</td>
-        <td>${u.name}</td>
-        <td>${u.email}</td>
-        <td>${u.phonenumber}</td>
-        <td>${u.role}</td>
-        <td>${statusBadge}</td>
-        <td>${u.created_at}</td>
-        <td>
-          <button class="btn btn-sm btn-info me-1 view-user bg-blue-400 px-2 py-1 rounded text-sm" data-id="${u.userid}">View</button>
-          <button class="btn btn-sm btn-warning me-1 toggle-user-usermodule ${u.status === "Active" ? "bg-yellow-500" : "bg-green-500"} text-white px-2 py-1 rounded text-sm" data-id="${u.userid}" data-status="${u.status}">
-            ${u.status === "Active" ? "Block" : "Unblock"}
-          </button>
-          <button class="btn btn-sm btn-danger delete-user bg-red-500 text-white px-2 py-1 rounded text-sm" data-id="${u.userid}">Delete</button>
-        </td>
-      </tr>
-    `;
-  });
-
-  html += `</tbody></table></div>`;
-  $("#content-area").html(html);
-
-  if ($.fn.DataTable) {
-    $("#usersTable").DataTable({
-      pageLength: 10,
-      responsive: true,
-      destroy: true
-    });
-  }
-
-  $(".view-user").click(function() { console.log("helloooo"); viewUserDetails($(this).data("id")); });
-  $(".toggle-user-usermodule").click(function() { toggleUserStatus($(this).data("id"), $(this).data("status")); });
-  $(".delete-user").click(function() { deleteUser($(this).data("id")); });
-}
-
-function viewUserDetails(userId) {
-  console.log("hello")
-  $.ajax({
-    url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-    method: "GET",
-    data: { action: "viewUser", userId: userId },
-    success: function (response) {
-      if (!response.user) {
-        Swal.fire("Error", "User details not found.", "error");
-        return;
-      }
-
-      let user = response.user;
-      
-      let userInfo = `
-        <div class="text-left p-5">
-          <div class="bg-gray-100 p-4 rounded-lg mb-5">
-            <h5 class="text-gray-800 mb-4 border-b-2 border-orange-500 pb-2 font-semibold">User Information</h5>
-            <div class="grid grid-cols-2 gap-3">
-              <div><span class="font-semibold text-gray-600">Email:</span> <span class="text-gray-800">${user.email}</span></div>
-              <div><span class="font-semibold text-gray-600">Phone:</span> <span class="text-gray-800">${user.phonenumber || 'N/A'}</span></div>
-              <div><span class="font-semibold text-gray-600">Role:</span> <span class="text-gray-800 capitalize">${user.role}</span></div>
-              <div><span class="font-semibold text-gray-600">Status:</span> 
-                <span class="px-3 py-1 rounded-full text-xs font-semibold ${user.status === 'Active' ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}">
-                  ${user.status}
-                </span>
-              </div>
-              <div class="col-span-2"><span class="font-semibold text-gray-600">Joined On:</span> <span class="text-gray-800">${user.created_at}</span></div>
-            </div>
-          </div>
-      `;
-
-      let content = userInfo;
-
-      if (user.role === "customer") {
-        if (response.orders && response.orders.length > 0) {
-          let ordersHtml = `
-            <div class="mt-5">
-              <h5 class="text-gray-800 mb-3 border-b-2 border-orange-500 pb-2 font-semibold">Recent Orders</h5>
-              <div class="overflow-x-auto">
-                <table class="min-w-full bg-white rounded-lg overflow-hidden">
-                  <thead class="bg-orange-500 text-white">
-                    <tr>
-                      <th class="px-4 py-3 text-left">Order ID</th>
-                      <th class="px-4 py-3 text-left">Restaurant</th>
-                      <th class="px-4 py-3 text-right">Amount</th>
-                      <th class="px-4 py-3 text-center">Date</th>
-                      <th class="px-4 py-3 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${response.orders.map((o, index) => `
-                      <tr class="${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'} border-b border-gray-200">
-                        <td class="px-4 py-3">#${o.orderId}</td>
-                        <td class="px-4 py-3">${o.restaurantName}</td>
-                        <td class="px-4 py-3 text-right font-semibold text-green-600">₹${o.amount.toFixed(2)}</td>
-                        <td class="px-4 py-3 text-center">${o.ordersDate.split(" ")[0]}</td>
-                        <td class="px-4 py-3 text-center">
-                          <span class="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                            ${o.status}
-                          </span>
-                        </td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>
-            </div>`;
-          content += ordersHtml;
-        } else {
-          content += `<div class="p-5 bg-yellow-100 rounded-lg text-center text-yellow-800 mt-4">
-            <i class="fas fa-info-circle"></i> No orders found for this customer.
-          </div>`;
-        }
-      } else if (user.role === "restaurant") {
-        if (response.restaurants && response.restaurants.length > 0) {
-          let restHtml = `
-            <div class="mt-5">
-              <h5 class="text-gray-800 mb-3 border-b-2 border-orange-500 pb-2 font-semibold">Owned Restaurants</h5>
-              <div class="overflow-x-auto">
-                <table class="min-w-full bg-white rounded-lg overflow-hidden">
-                  <thead class="bg-orange-500 text-white">
-                    <tr>
-                      <th class="px-4 py-3 text-left">ID</th>
-                      <th class="px-4 py-3 text-left">Restaurant Name</th>
-                      <th class="px-4 py-3 text-center">Total Orders</th>
-                      <th class="px-4 py-3 text-right">Revenue</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${response.restaurants.map((r, index) => `
-                      <tr class="${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'} border-b border-gray-200">
-                        <td class="px-4 py-3">#${r.restaurantId}</td>
-                        <td class="px-4 py-3 font-semibold">${r.restaurantName}</td>
-                        <td class="px-4 py-3 text-center">${r.totalOrders}</td>
-                        <td class="px-4 py-3 text-right font-semibold text-green-600">₹${r.totalRevenue.toFixed(2)}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>
-            </div>`;
-          content += restHtml;
-        } else {
-          content += `<div class="p-5 bg-yellow-100 rounded-lg text-center text-yellow-800 mt-4">
-            <i class="fas fa-info-circle"></i> No restaurants found for this owner.
-          </div>`;
-        }
-      }
-
-      content += `</div>`; 
-
-      Swal.fire({
-        title: `<div class="text-orange-500 font-bold">${user.name}</div>`,
-        html: content,
-        width: 800,
-        confirmButtonText: "Close",
-        confirmButtonColor: "#ff6347",
-        showCloseButton: true
-      });
-    },
-    error: function () {
-      Swal.fire("Error", "Failed to fetch user details.", "error");
-    }
-  });
-}
-
-
-function toggleUserStatus(userId, currentStatus) {
-  let newStatus = currentStatus === "Active" ? "Blocked" : "Active";
-  let confirmMsg = currentStatus === "Active"
-    ? "Are you sure you want to block this user?"
-    : "Are you sure you want to unblock this user?";
-
-  Swal.fire({
-    title: "Confirm Action",
-    text: confirmMsg,
-    icon: "warning",
-    showCancelButton: true,
-    confirmButtonColor: "#3085d6",
-    cancelButtonColor: "#d33",
-    confirmButtonText: "Yes, proceed"
-  }).then((result) => {
-    if (result.isConfirmed) {
-      $.ajax({
-        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-        method: "POST",
-        data: {
-          action: "toggleUserStatus",
-          userId: userId,
-          currentStatus: currentStatus
-        },
-        success: function(response) {
-          if (response.status === "success") {
-            Swal.fire("Success!", response.message, "success");
-            setTimeout(() => loadUsers(), 1000);
-          } else {
-            Swal.fire("Error", response.message || "Something went wrong", "error");
-          }
-        },
-        error: function() {
-          Swal.fire("Error", "Failed to update user status.", "error");
-        }
-      });
-    }
-  });
-}
-
-
-function deleteUser(userId) {
-  Swal.fire({
-    title: "Are you sure?",
-    text: "This will mark the user as deleted.",
-    icon: "warning",
-    showCancelButton: true,
-    confirmButtonColor: "#d33",
-    confirmButtonText: "Yes, delete it"
-  }).then((result) => {
-    if (result.isConfirmed) {
-      $.ajax({
-        url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-        method: "POST",
-        data: { action: "deleteUser", userId: userId },
-        success: function (response) {
-          if (response.status === "success") {
-            Swal.fire("Deleted!", response.message, "success");
-            loadUsers();
-          } else {
-            Swal.fire("Error", response.message || "Failed to delete user", "error");
-          }
-        },
-        error: function () {
-          Swal.fire("Error", "Failed to delete user.", "error");
-        }
-      });
-    }
-  });
-}
-
-
-function loadAddAdmin() {
-  const formHTML = `
-    <div class="bg-white p-6 rounded-lg shadow-md max-w-lg mx-auto mt-6">
-      <h2 class="text-2xl font-bold mb-4 text-center text-gray-700">Add New SuperAdmin</h2>
-      <form id="addAdminForm" class="space-y-4" novalidate>
-        <div>
-          <label class="block text-gray-600 mb-1">Full Name</label>
-          <input type="text" id="adminName" class="w-full border rounded-lg px-3 py-2" placeholder="Enter full name" required>
-          <small id="nameError" class="text-red-500 text-sm"></small>
-        </div>
-
-        <div>
-          <label class="block text-gray-600 mb-1">Email</label>
-          <input type="email" id="adminEmail" class="w-full border rounded-lg px-3 py-2" placeholder="Enter email" required>
-          <small id="emailError" class="text-red-500 text-sm"></small>
-        </div>
-
-        <div>
-          <label class="block text-gray-600 mb-1">Phone Number</label>
-          <input type="text" id="adminPhone" class="w-full border rounded-lg px-3 py-2" placeholder="Enter phone number" required>
-          <small id="phoneError" class="text-red-500 text-sm"></small>
-        </div>
-
-        <div>
-          <label class="block text-gray-600 mb-1">Address</label>
-          <textarea id="adminAddress" class="w-full border rounded-lg px-3 py-2" placeholder="Enter address" required></textarea>
-          <small id="addressError" class="text-red-500 text-sm"></small>
-        </div>
-
-        <div>
-          <label class="block text-gray-600 mb-1">Password</label>
-          <input type="password" id="adminPassword" class="w-full border rounded-lg px-3 py-2" placeholder="Enter password" required>
-          <small id="passwordError" class="text-red-500 text-sm"></small>
-        </div>
-
-        <div class="text-center mt-4">
-          <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg">Add SuperAdmin</button>
-        </div>
-      </form>
-    </div>
-  `;
-
-  $("#content-area").html(formHTML);
-
-  const validateName = name => name.trim().length >= 3 ? "" : "Name must be at least 3 characters.";
-  const validateEmail = email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? "" : "Invalid email format.";
-  const validatePhone = phone => /^[6-9]\d{9}$/.test(phone.trim()) ? "" : "Enter valid 10-digit phone number.";
-  const validateAddress = addr => addr.trim().length >= 5 ? "" : "Address must be at least 5 characters.";
-  const validatePassword = pass => /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*#?&]).{8,}$/.test(pass) ? "" : "Must include uppercase, lowercase, number, special char & 8+ chars.";
-
-  function checkName() { $("#nameError").text(validateName($("#adminName").val())); }
-  function checkEmail() { $("#emailError").text(validateEmail($("#adminEmail").val())); }
-  function checkPhone() { $("#phoneError").text(validatePhone($("#adminPhone").val())); }
-  function checkAddress() { $("#addressError").text(validateAddress($("#adminAddress").val())); }
-  function checkPassword() { $("#passwordError").text(validatePassword($("#adminPassword").val())); }
-
-  $("#adminName").on("input blur", checkName);
-  $("#adminEmail").on("input blur", checkEmail);
-  $("#adminPhone").on("input blur", checkPhone);
-  $("#adminAddress").on("input blur", checkAddress);
-  $("#adminPassword").on("input blur", checkPassword);
-
-  $("#addAdminForm").on("submit", function (e) {
-    e.preventDefault();
-
-    const name = $("#adminName").val().trim();
-    const email = $("#adminEmail").val().trim();
-    const phone = $("#adminPhone").val().trim();
-    const address = $("#adminAddress").val().trim();
-    const password = $("#adminPassword").val();
-
-    const errors = {
-      name: validateName(name),
-      email: validateEmail(email),
-      phone: validatePhone(phone),
-      address: validateAddress(address),
-      password: validatePassword(password)
-    };
-
-    $("#nameError").text(errors.name);
-    $("#emailError").text(errors.email);
-    $("#phoneError").text(errors.phone);
-    $("#addressError").text(errors.address);
-    $("#passwordError").text(errors.password);
-
-    if (Object.values(errors).some(v => v !== "")) return;
-
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/AdminDashboardServlet",
-      method: "POST",
-      data: {
-        action: "addSuperAdmin",
-        name: name,
-        email: email,
-        phone: phone,
-        address: address,
-        password: password
-      },
-      success: function (response) {
-        if (response.status === "success") {
-          Swal.fire("Success", response.message || "SuperAdmin added successfully!", "success");
-          $("#addAdminForm")[0].reset();
-        } else {
-          Swal.fire("Error", response.message || "Email already exists or failed to add admin.", "error");
-        }
-      },
-      error: function () {
-        Swal.fire("Error", "Failed to connect to server.", "error");
-      }
-    });
-
-
-
-  });
-}
-
-function loadProfile() {
-  window.location.href = "superAdminProfile.html";
-}
