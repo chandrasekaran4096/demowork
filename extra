@@ -1,0 +1,297 @@
+I'll help you with both requirements:
+1. Exception Handling & Resource Management
+I'll review the code and provide improvements for proper exception handling with finally blocks. Here are the key areas that need attention:
+Example Fix for CartDAO.java
+javapublic List<CartItem> getCartByUser(int userId) {
+    List<CartItem> list = new ArrayList<>();
+    Connection con = null;
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+
+    String sql = "SELECT c.cart_id, c.userid, c.menu_id, c.quantity, m.item_name, m.price, m.img, m.restaurant_id, r.name "
+            + "FROM food.M_D_CART c WITH (NOLOCK) JOIN food.M_D_MENU m WITH (NOLOCK) ON c.menu_id = m.menu_id JOIN food.M_D_RESTAURANT r on m.restaurant_id=r.restaurant_id "
+            + "WHERE c.userid = ? AND c.is_deleted = 0";
+
+    try {
+        con = DBConnection.getConnection();
+        if (con == null) {
+            logger.error("Failed to get database connection");
+            return list;
+        }
+        
+        ps = con.prepareStatement(sql);
+        ps.setInt(1, userId);
+        rs = ps.executeQuery();
+
+        while (rs.next()) {
+            CartItem it = new CartItem();
+            String imgPath = "http://localhost:8080/BiteBudddy/MenuImageServlet?id=" + rs.getInt("menu_id");
+
+            it.setCartId(rs.getInt("cart_id"));
+            it.setUserId(rs.getInt("userid"));
+            it.setMenuId(rs.getInt("menu_id"));
+            it.setQuantity(rs.getInt("quantity"));
+            it.setItemName(rs.getString("item_name"));
+            it.setPrice(rs.getDouble("price"));
+            it.setImagePath(imgPath);
+            it.setRestaurantId(rs.getInt("restaurant_id"));
+            it.setRestaurantName(rs.getString("name"));
+            list.add(it);
+        }
+    } catch (SQLException e) {
+        logger.error("Error getting cart for user: " + userId, e);
+    } finally {
+        DBUtil.closeResources(rs, ps, con);
+    }
+    return list;
+}
+Create a Reusable CartService method
+Add this to CartService.java:
+javapublic int getCartItemCount(int userId) {
+    logger.info("Fetching cart item count for user: " + userId);
+    try {
+        return dao.getCartItemCount(userId);
+    } catch (Exception e) {
+        logger.error("Error getting cart count: " + e.getMessage(), e);
+        return 0;
+    }
+}
+Add this to CartDAO.java:
+javapublic int getCartItemCount(int userId) {
+    Connection con = null;
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+
+    String sql = "SELECT COUNT(*) as count FROM food.M_D_CART WITH (NOLOCK) WHERE userid = ? AND is_deleted = 0";
+
+    try {
+        con = DBConnection.getConnection();
+        if (con == null) {
+            logger.error("Failed to get database connection");
+            return 0;
+        }
+        
+        ps = con.prepareStatement(sql);
+        ps.setInt(1, userId);
+        rs = ps.executeQuery();
+        
+        if (rs.next()) {
+            return rs.getInt("count");
+        }
+    } catch (SQLException e) {
+        logger.error("Error getting cart count for user: " + userId, e);
+    } finally {
+        DBUtil.closeResources(rs, ps, con);
+    }
+    return 0;
+}
+2. Cart Item Count Badge
+Backend: Add endpoint to CartApiServlet.java
+Add this to the doGet method in CartApiServlet.java:
+java@Override
+protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    String action = req.getParameter("action");
+    
+    logger.info("GET /api/cart - Action: " + action);
+    resp.setContentType("application/json");
+    resp.setCharacterEncoding("UTF-8");
+    
+    try {
+        HttpSession session = req.getSession(false);
+        if (session == null || session.getAttribute("user") == null) {
+            logger.warn("Unauthorized cart access");
+            resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Not authenticated")
+            ));
+            return;
+        }
+
+        User user = (User) session.getAttribute("user");
+        
+        if (!"customer".equalsIgnoreCase(user.getRole())) {
+            logger.warn("Non-customer accessing cart: " + user.getRole());
+            resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Customer role required")
+            ));
+            return;
+        }
+        
+        int userId = user.getUserId();
+        
+        // Handle cart count request
+        if ("count".equals(action)) {
+            int count = service.getCartItemCount(userId);
+            Map<String, Integer> result = new HashMap<>();
+            result.put("count", count);
+            resp.getWriter().write(gson.toJson(result));
+            logger.debug("Cart count for user " + userId + ": " + count);
+            return;
+        }
+        
+        // Default: return full cart
+        List<CartItem> list = service.getCartForUser(userId);
+        resp.getWriter().write(gson.toJson(list));
+        logger.debug("Cart fetched for user: " + userId + ", items: " + list.size());
+        
+    } catch (Exception e) {
+        logger.error("Error fetching cart: " + e.getMessage(), e);
+        resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        resp.getWriter().write(gson.toJson(
+            new ResponseMessage<>("error", "Server error")
+        ));
+    }
+}
+Frontend: Update Navigation HTML
+Update all customer page navigation bars (restaurant.html, menu.html, orders.html, profile.html):
+html<nav class="flex justify-between items-center px-8 py-4 bg-black/60 backdrop-blur-md sticky top-0 z-50">
+  <h1 class="text-2xl font-bold text-orange-500">BiteBuddy</h1>
+  <ul class="flex gap-6">
+    <li><a href="restaurant.html" class="hover:text-orange-400">Home</a></li>
+    <li><a href="profile.html" class="hover:text-orange-400">Profile</a></li>
+    <li>
+      <a href="cart.html" class="hover:text-orange-400 relative inline-block">
+        Cart
+        <span id="cartBadge" class="absolute -top-2 -right-3 bg-red-500 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center hidden">
+          0
+        </span>
+      </a>
+    </li>
+    <li><a href="orders.html" class="hover:text-orange-400">Orders</a></li>
+    <li><button id="logoutBtn" class="hover:text-orange-500 transition">Logout</button></li>
+  </ul>
+</nav>
+Frontend: Add Cart Badge JS
+Create a new file js/cartBadge.js:
+javascript// Cart Badge Manager
+const CartBadge = {
+  init() {
+    this.updateBadge();
+    // Update every 30 seconds
+    setInterval(() => this.updateBadge(), 30000);
+  },
+
+  updateBadge() {
+    $.ajax({
+      url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=count",
+      method: "GET",
+      dataType: "json",
+      success: function(data) {
+        const count = data.count || 0;
+        const $badge = $("#cartBadge");
+        
+        if (count > 0) {
+          $badge.text(count).removeClass("hidden");
+          // Add pulse animation on update
+          $badge.addClass("animate-pulse");
+          setTimeout(() => $badge.removeClass("animate-pulse"), 1000);
+        } else {
+          $badge.addClass("hidden");
+        }
+      },
+      error: function(xhr) {
+        // Silently fail for unauthorized/forbidden
+        if (xhr.status === 401 || xhr.status === 403) {
+          $("#cartBadge").addClass("hidden");
+        }
+      }
+    });
+  },
+
+  // Call this after adding/removing items
+  refresh() {
+    this.updateBadge();
+  }
+};
+
+// Initialize on page load
+$(document).ready(function() {
+  CartBadge.init();
+});
+Update existing JS files to refresh badge
+In menu.js after adding to cart:
+javascript$(document).on("click", ".add-to-cart-btn", function () {
+  const menuId = $(this).data("id");
+
+  $.ajax({
+    url: "http://localhost:8080/BiteBudddy/CartApiServlet?action=add",
+    method: "POST",
+    contentType: "application/json",
+    data: JSON.stringify({ menu_id: menuId, quantity: 1 }),
+    success: function (res) {
+      // ... existing code ...
+      if (res.status === "success") {
+        // Refresh cart badge
+        if (typeof CartBadge !== 'undefined') {
+          CartBadge.refresh();
+        }
+        
+        Swal.fire({
+          toast: true,
+          icon: "success",
+          title: "Item added to cart!",
+          position: "top-end",
+          showConfirmButton: false,
+          timer: 2000,
+          timerProgressBar: true
+        });
+      }
+      // ... rest of existing code ...
+    }
+  });
+});
+In cart.js after deleting items:
+javascript$(document).on("click", ".remove", function () {
+  const cartId = $(this).data("id");
+
+  Swal.fire({
+    // ... existing Swal code ...
+  }).then((result) => {
+    if (result.isConfirmed) {
+      $.ajax({
+        // ... existing ajax code ...
+        success: function (res) {
+          if (res.status === "success") {
+            toast("Item removed from cart!", "#4caf50");
+            loadCart();
+            
+            // Refresh cart badge
+            if (typeof CartBadge !== 'undefined') {
+              CartBadge.refresh();
+            }
+          }
+          // ... rest of existing code ...
+        }
+      });
+    }
+  });
+});
+Include cartBadge.js in all customer pages
+Add this script tag to restaurant.html, menu.html, orders.html, profile.html (after jQuery):
+html<script src="../js/cartBadge.js"></script>
+Add CSS animation (optional)
+Add to your CSS:
+css@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+.animate-pulse {
+  animation: pulse 0.5s ease-in-out;
+}
+Summary of Changes:
+
+Exception Handling: Added proper try-catch-finally blocks with connection null checks
+Resource Management: Using finally blocks to ensure resources are always closed
+Cart Count Backend: Added getCartItemCount method in DAO and Service layers
+Cart Count Endpoint: Added action=count parameter handling in CartApiServlet
+Badge UI: Added visual badge to cart navigation link
+Real-time Updates: CartBadge.js automatically updates count and refreshes on cart operations
+No Frontend Breaking Changes: All existing functionality preserved
+
+The cart badge will now show the number of items in the cart and update automatically when items are added or removed!
