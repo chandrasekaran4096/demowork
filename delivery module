@@ -1,0 +1,2266 @@
+Delivery Man Module - Implementation Plan
+Overview
+The delivery man module will allow delivery personnel to:
+
+Register/Login as delivery staff
+View assigned deliveries
+Update delivery status
+Track earnings
+View delivery history
+
+Database Schema Changes
+
+-- Delivery Person Table
+CREATE TABLE food.M_D_DELIVERY_PERSON (
+    delivery_person_id INT IDENTITY(1,1) PRIMARY KEY,
+    userid INT NOT NULL,
+    vehicle_type VARCHAR(50) NULL,
+    vehicle_number VARCHAR(50) NULL,
+    license_number VARCHAR(50) NULL,
+    is_available BIT DEFAULT 1,
+    current_latitude DECIMAL(10, 8) NULL,
+    current_longitude DECIMAL(11, 8) NULL,
+    rating DECIMAL(3,2) DEFAULT 5.0,
+    total_deliveries INT DEFAULT 0,
+    created_at DATETIME DEFAULT GETDATE(),
+    updated_at DATETIME NULL,
+    is_deleted BIT DEFAULT 0
+);
+
+-- Update Orders table to include delivery person
+ALTER TABLE food.M_D_ORDERS
+ADD delivery_person_id INT NULL,
+    delivery_assigned_at DATETIME NULL,
+    delivery_picked_up_at DATETIME NULL,
+    delivery_completed_at DATETIME NULL;
+```
+
+## Implementation Plan
+
+### Phase 1: Backend Components
+
+#### 1. **Model Classes**
+- `DeliveryPerson.java`
+- `DeliveryAssignment.java`
+- Update `Order.java` with delivery fields
+
+#### 2. **DAO Layer**
+- `DeliveryPersonDAO.java`
+- Update `OrderDAO.java` for delivery operations
+
+#### 3. **Service Layer**
+- `DeliveryPersonService.java`
+- Update `OrderService.java`
+
+#### 4. **Servlet Layer**
+- `DeliveryPersonServlet.java`
+- `DeliveryAssignmentServlet.java`
+- Update registration to handle delivery role
+
+### Phase 2: Frontend Components
+
+#### 1. **Pages**
+- `deliveryDashboard.html` - Main dashboard
+- `deliveryOrders.html` - Active deliveries
+- `deliveryHistory.html` - Past deliveries
+- `deliveryProfile.html` - Profile management
+
+#### 2. **JavaScript**
+- `deliveryDashboard.js`
+- `deliveryOrders.js`
+- `deliveryHistory.js`
+
+## Expected Output Features
+
+### 1. **Delivery Dashboard**
+- Total deliveries today
+- Earnings today/week/month
+- Current rating
+- Available/Busy status toggle
+
+### 2. **Active Deliveries View**
+- List of assigned orders
+- Customer details
+- Restaurant details
+- Delivery address
+- Order status update buttons
+
+### 3. **Status Flow**
+```
+GIVEN_TO_DELIVERY → ON_THE_WAY → DELIVERED
+
+Now, let me implement the complete module:
+
+-- Delivery Person Table
+IF NOT EXISTS(SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'M_D_DELIVERY_PERSON' AND TABLE_SCHEMA='food')
+BEGIN
+    CREATE TABLE food.M_D_DELIVERY_PERSON (
+        delivery_person_id INT IDENTITY(1,1) PRIMARY KEY,
+        userid INT NOT NULL,
+        vehicle_type VARCHAR(50) NULL,
+        vehicle_number VARCHAR(50) NULL,
+        license_number VARCHAR(50) NULL,
+        is_available BIT DEFAULT 1,
+        current_latitude DECIMAL(10, 8) NULL,
+        current_longitude DECIMAL(11, 8) NULL,
+        rating DECIMAL(3,2) DEFAULT 5.0,
+        total_deliveries INT DEFAULT 0,
+        earnings_today DECIMAL(10,2) DEFAULT 0,
+        earnings_week DECIMAL(10,2) DEFAULT 0,
+        earnings_month DECIMAL(10,2) DEFAULT 0,
+        created_at DATETIME DEFAULT GETDATE(),
+        updated_at DATETIME NULL,
+        is_deleted BIT DEFAULT 0,
+        FOREIGN KEY (userid) REFERENCES food.M_S_USERS(userid)
+    );
+END
+GO
+
+-- Add delivery columns to Orders table
+IF NOT EXISTS(SELECT * FROM INFORMATION_SCHEMA.COLUMNS 
+    WHERE TABLE_NAME = 'M_D_ORDERS' AND COLUMN_NAME = 'delivery_person_id' AND TABLE_SCHEMA='food')
+BEGIN
+    ALTER TABLE food.M_D_ORDERS
+    ADD delivery_person_id INT NULL,
+        delivery_assigned_at DATETIME NULL,
+        delivery_picked_up_at DATETIME NULL,
+        delivery_completed_at DATETIME NULL,
+        delivery_rating DECIMAL(3,2) NULL,
+        delivery_fee DECIMAL(10,2) DEFAULT 30.00;
+END
+GO
+
+-- Update M_S_USERS role to include delivery
+-- Users can now register with role 'delivery'
+
+-- Sample delivery person insert (after user registration)
+-- INSERT INTO food.M_D_DELIVERY_PERSON (userid, vehicle_type, vehicle_number, license_number)
+-- VALUES (user_id, 'Bike', 'TN01AB1234', 'TN012023XXXXXX');
+
+SELECT * FROM food.M_D_DELIVERY_PERSON;
+SELECT * FROM food.M_D_ORDERS WHERE delivery_person_id IS NOT NULL;
+
+Now let me create the Service, Servlet, and Frontend files:
+
+package com.bite.service;
+
+import com.bite.dao.DeliveryPersonDAO;
+import com.bite.model.DeliveryPerson;
+import com.bite.model.Order;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
+
+import java.util.List;
+import java.util.Map;
+
+public class DeliveryPersonService {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryPersonService.class);
+    private final DeliveryPersonDAO dao = new DeliveryPersonDAO();
+
+    public boolean registerDeliveryPerson(DeliveryPerson dp) {
+        logger.info("Registering delivery person for user: " + dp.getUserId());
+        try {
+            return dao.createDeliveryPerson(dp);
+        } catch (Exception e) {
+            logger.error("Error registering delivery person: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public DeliveryPerson getDeliveryPersonByUserId(int userId) {
+        logger.info("Fetching delivery person for user: " + userId);
+        try {
+            return dao.getDeliveryPersonByUserId(userId);
+        } catch (Exception e) {
+            logger.error("Error fetching delivery person: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public List<Order> getAssignedOrders(int deliveryPersonId) {
+        logger.info("Fetching assigned orders for delivery person: " + deliveryPersonId);
+        try {
+            return dao.getAssignedOrders(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching assigned orders: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean updateDeliveryStatus(int orderId, String status) {
+        logger.info("Updating delivery status for order: " + orderId + " to " + status);
+        try {
+            return dao.updateDeliveryStatus(orderId, status);
+        } catch (Exception e) {
+            logger.error("Error updating delivery status: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public List<Order> getDeliveryHistory(int deliveryPersonId) {
+        logger.info("Fetching delivery history for: " + deliveryPersonId);
+        try {
+            return dao.getDeliveryHistory(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching delivery history: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean toggleAvailability(int deliveryPersonId, boolean isAvailable) {
+        logger.info("Toggling availability for delivery person: " + deliveryPersonId);
+        try {
+            return dao.toggleAvailability(deliveryPersonId, isAvailable);
+        } catch (Exception e) {
+            logger.error("Error toggling availability: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public Map<String, Object> getDashboardStats(int deliveryPersonId) {
+        logger.info("Fetching dashboard stats for delivery person: " + deliveryPersonId);
+        try {
+            return dao.getDashboardStats(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching dashboard stats: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean rateDelivery(int orderId, int rating) {
+        logger.info("Rating delivery for order: " + orderId + " with rating: " + rating);
+        try {
+            if (rating < 1 || rating > 5) {
+                logger.warn("Invalid rating value: " + rating);
+                return false;
+            }
+            return dao.updateDeliveryRating(orderId, rating);
+        } catch (Exception e) {
+            logger.error("Error rating delivery: " + e.getMessage(), e);
+            return false;
+        }
+    }
+}
+
+Now let me create the frontend files:
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BiteBuddy - Delivery Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="../Plugins/sweetalert2@11.js"></script>
+  <script src="../Plugins/Jquery/jquery-3.7.1.min 1.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    body { font-family: 'Poppins', sans-serif; background: #0f0f0f; color: #fff; }
+    .glass { background: rgba(255,255,255,0.04); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.06); }
+    .active-order { border-left: 4px solid #22c55e; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
+  </style>
+</head>
+<body class="min-h-screen">
+  
+  <nav class="bg-black/60 backdrop-blur-md px-8 py-4 flex items-center justify-between sticky top-0 z-50">
+    <h1 class="text-2xl font-bold text-orange-400">🚴 BiteBuddy Delivery</h1>
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <span id="deliveryPersonName" class="font-semibold"></span>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="availabilityToggle" class="sr-only peer">
+          <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
+          <span class="ml-3 text-sm font-medium" id="availabilityText">Offline</span>
+        </label>
+      </div>
+      <button id="logoutBtn" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </button>
+    </div>
+  </nav>
+
+  <main class="px-6 py-8 max-w-7xl mx-auto">
+    
+    <!-- Stats Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">🚀</div>
+        <p class="text-sm text-gray-400">Deliveries Today</p>
+        <h2 class="text-3xl font-bold text-orange-400" id="deliveriesToday">0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">💰</div>
+        <p class="text-sm text-gray-400">Earnings Today</p>
+        <h2 class="text-3xl font-bold text-green-400" id="earningsToday">₹0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">📊</div>
+        <p class="text-sm text-gray-400">This Week</p>
+        <h2 class="text-3xl font-bold text-blue-400" id="earningsWeek">₹0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">⭐</div>
+        <p class="text-sm text-gray-400">Your Rating</p>
+        <h2 class="text-3xl font-bold text-yellow-400" id="deliveryRating">5.0</h2>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="mb-6 flex gap-4 border-b border-gray-700">
+      <button class="tab-btn active px-6 py-3 font-semibold" data-tab="active">
+        Active Deliveries
+      </button>
+      <button class="tab-btn px-6 py-3 font-semibold" data-tab="history">
+        Delivery History
+      </button>
+    </div>
+
+    <!-- Active Deliveries Section -->
+    <div id="activeTab" class="tab-content">
+      <div id="activeOrdersContainer" class="space-y-4">
+        <p class="text-center text-gray-400 py-10">No active deliveries</p>
+      </div>
+    </div>
+
+    <!-- History Section -->
+    <div id="historyTab" class="tab-content hidden">
+      <div id="historyContainer" class="space-y-4">
+        <p class="text-center text-gray-400 py-10">No delivery history</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="../js/deliveryDashboard.js"></script>
+</body>
+</html>
+Now let me update the UserServlet to handle delivery role and create an assignment servlet for restaurants
+package com.bite.controller;
+
+import com.bite.dao.OrderDAO;
+import com.bite.model.ResponseMessage;
+import com.bite.model.User;
+import com.bite.util.LoggerUtil;
+import com.google.gson.Gson;
+import org.apache.log4j.Logger;
+
+import javax.servlet.http.*;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
+
+import com.bite.util.DBConnection;
+import com.bite.util.DBUtil;
+
+/**
+ * Servlet for restaurant owners to assign orders to delivery personnel
+ */
+public class DeliveryAssignmentServlet extends HttpServlet {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryAssignmentServlet.class);
+    private final Gson gson = new Gson();
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("GET /DeliveryAssignment - Fetching available delivery persons");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            User user = (User) session.getAttribute("user");
+            if (!"restaurant".equalsIgnoreCase(user.getRole())) {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Restaurant role required")));
+                return;
+            }
+
+            List<Map<String, Object>> availableDelivery = getAvailableDeliveryPersons();
+            resp.getWriter().write(gson.toJson(availableDelivery));
+
+        } catch (Exception e) {
+            logger.error("Error fetching delivery persons: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("POST /DeliveryAssignment - Assigning order to delivery person");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            String orderIdStr = req.getParameter("orderId");
+            String deliveryPersonIdStr = req.getParameter("deliveryPersonId");
+
+            if (orderIdStr == null || deliveryPersonIdStr == null) {
+                resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Missing parameters")));
+                return;
+            }
+
+            int orderId = Integer.parseInt(orderIdStr);
+            int deliveryPersonId = Integer.parseInt(deliveryPersonIdStr);
+
+            boolean success = assignDeliveryPerson(orderId, deliveryPersonId);
+
+            if (success) {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Delivery person assigned successfully", true)));
+                logger.info("Order " + orderId + " assigned to delivery person " + deliveryPersonId);
+            } else {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to assign delivery person", false)));
+            }
+
+        } catch (NumberFormatException e) {
+            logger.error("Invalid ID format: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Invalid ID format")));
+        } catch (Exception e) {
+            logger.error("Error assigning delivery person: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    private List<Map<String, Object>> getAvailableDeliveryPersons() {
+        List<Map<String, Object>> persons = new ArrayList<>();
+        String sql = "SELECT dp.delivery_person_id, u.name, u.phonenumber, dp.vehicle_type, " +
+                     "dp.rating, dp.total_deliveries " +
+                     "FROM food.M_D_DELIVERY_PERSON dp " +
+                     "JOIN food.M_S_USERS u ON dp.userid = u.userid " +
+                     "WHERE dp.is_available = 1 AND dp.is_deleted = 0 AND u.is_deleted = 0 " +
+                     "ORDER BY dp.rating DESC, dp.total_deliveries DESC";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Map<String, Object> person = new HashMap<>();
+                person.put("deliveryPersonId", rs.getInt("delivery_person_id"));
+                person.put("name", rs.getString("name"));
+                person.put("phoneNumber", rs.getString("phonenumber"));
+                person.put("vehicleType", rs.getString("vehicle_type"));
+                person.put("rating", rs.getDouble("rating"));
+                person.put("totalDeliveries", rs.getInt("total_deliveries"));
+                persons.add(person);
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching available delivery persons: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+
+        return persons;
+    }
+
+    private boolean assignDeliveryPerson(int orderId, int deliveryPersonId) {
+        String sql = "UPDATE food.M_D_ORDERS SET delivery_person_id = ?, " +
+                     "delivery_assigned_at = GETDATE(), status = 'GIVEN_TO_DELIVERY', " +
+                     "updated_at = GETDATE() WHERE order_id = ?";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            ps.setInt(2, orderId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            logger.error("Error assigning delivery person: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+}
+
+Finally, let me create the updated register.html to include delivery role:
+<!-- Add these servlet mappings to your existing web.xml -->
+
+<!-- Delivery Person Servlet -->
+<servlet>
+    <servlet-name>DeliveryPersonServlet</servlet-name>
+    <servlet-class>com.bite.controller.DeliveryPersonServlet</servlet-class>
+</servlet>
+<servlet-mapping>
+    <servlet-name>DeliveryPersonServlet</servlet-name>
+    <url-pattern>/DeliveryPersonServlet</url-pattern>
+</servlet-mapping>
+
+<!-- Delivery Assignment Servlet -->
+<servlet>
+    <servlet-name>DeliveryAssignmentServlet</servlet-name>
+    <servlet-class>com.bite.controller.DeliveryAssignmentServlet</servlet-class>
+</servlet>
+<servlet-mapping>
+    <servlet-name>DeliveryAssignmentServlet</servlet-name>
+    <url-pattern>/DeliveryAssignmentServlet</url-pattern>
+</servlet-mapping>
+
+<!-- Update SessionFilter to handle delivery role -->
+<!-- In your SessionFilter.java, add this method: -->
+<!--
+private boolean isDeliveryPage(String page) {
+    return page.contains("/deliveryDashboard.html") ||
+           page.contains("/deliveryProfile.html");
+}
+
+// Update getDashboardForRole method:
+private String getDashboardForRole(String role) {
+    if ("superadmin".equalsIgnoreCase(role)) {
+        return "/HTML/superAdmin.html";
+    } else if ("restaurant".equalsIgnoreCase(role)) {
+        return "/HTML/restaurantdashboard.html";
+    } else if ("delivery".equalsIgnoreCase(role)) {
+        return "/HTML/deliveryDashboard.html";
+    } else {
+        return "/HTML/restaurant.html";
+    }
+}
+
+// In doFilter, add check:
+if (isDeliveryPage(page) && !"delivery".equalsIgnoreCase(userRole)) {
+    logger.warn("Non-delivery user blocked from delivery pages: " + user.getEmail());
+    resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+    return;
+}
+Now let me create a comprehensive README with implementation steps:
+# 🚴 Delivery Module Implementation Guide
+
+## Overview
+This module adds delivery personnel functionality to the BiteBuddy food delivery system.
+
+## Features
+
+### For Delivery Personnel:
+- ✅ Register as delivery person with vehicle details
+- ✅ Real-time dashboard with earnings & stats
+- ✅ View assigned deliveries
+- ✅ Update delivery status (Picked Up → On The Way → Delivered)
+- ✅ Toggle availability (Online/Offline)
+- ✅ View delivery history with ratings
+- ✅ Track daily/weekly/monthly earnings
+
+### For Restaurant Owners:
+- ✅ View available delivery personnel
+- ✅ Assign orders to delivery persons
+- ✅ Track delivery status
+
+## Implementation Steps
+
+### 1. Database Setup
+Run the SQL script from `delivery_schema` artifact:
+```sql
+-- Creates M_D_DELIVERY_PERSON table
+-- Adds delivery columns to M_D_ORDERS table
+```
+
+### 2. Backend Implementation
+
+#### Model Layer
+Add `DeliveryPerson.java` to `com.bite.model` package
+
+#### DAO Layer
+Add `DeliveryPersonDAO.java` to `com.bite.dao` package
+
+#### Service Layer
+Add `DeliveryPersonService.java` to `com.bite.service` package
+
+#### Controller Layer
+Add these servlets to `com.bite.controller`:
+- `DeliveryPersonServlet.java`
+- `DeliveryAssignmentServlet.java`
+
+### 3. Update Existing Files
+
+#### UserServlet.java
+Update `determineRedirectPage()` method:
+```java
+private String determineRedirectPage(String role) {
+    if ("superadmin".equalsIgnoreCase(role)) {
+        return "superAdmin.html";
+    } else if ("restaurant".equalsIgnoreCase(role)) {
+        return "restaurantdashboard.html";
+    } else if ("delivery".equalsIgnoreCase(role)) {
+        return "deliveryDashboard.html";  // NEW
+    } else {
+        return "restaurant.html";
+    }
+}
+```
+
+#### SessionFilter.java
+Add delivery page checks:
+```java
+private boolean isDeliveryPage(String page) {
+    return page.contains("/deliveryDashboard.html");
+}
+
+// In doFilter method, add:
+if (isDeliveryPage(page) && !"delivery".equalsIgnoreCase(userRole)) {
+    resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+    return;
+}
+```
+
+#### register.html
+Update role options to include 'delivery':
+```html
+<select name="role">
+    <option value="">Select</option>
+    <option value="customer">Customer</option>
+    <option value="restaurant">Restaurant</option>
+    <option value="delivery">Delivery Personnel</option>  <!-- NEW -->
+</select>
+```
+
+### 4. Frontend Implementation
+
+Add to `HTML/` folder:
+- `deliveryDashboard.html`
+
+Add to `js/` folder:
+- `deliveryDashboard.js`
+
+### 5. Web.xml Configuration
+Add servlet mappings (see `web_xml_update` artifact)
+
+## Database Schema
+
+### M_D_DELIVERY_PERSON Table
+| Column | Type | Description |
+|--------|------|-------------|
+| delivery_person_id | INT | Primary Key |
+| userid | INT | Foreign Key to M_S_USERS |
+| vehicle_type | VARCHAR(50) | Bike/Car/Scooter |
+| vehicle_number | VARCHAR(50) | Vehicle registration |
+| license_number | VARCHAR(50) | Driving license |
+| is_available | BIT | Online status |
+| rating | DECIMAL(3,2) | Average rating |
+| total_deliveries | INT | Completed deliveries |
+| earnings_today | DECIMAL(10,2) | Today's earnings |
+| earnings_week | DECIMAL(10,2) | Week's earnings |
+| earnings_month | DECIMAL(10,2) | Month's earnings |
+
+### M_D_ORDERS (Updated)
+| New Column | Type | Description |
+|------------|------|-------------|
+| delivery_person_id | INT | Assigned delivery person |
+| delivery_assigned_at | DATETIME | Assignment timestamp |
+| delivery_picked_up_at | DATETIME | Pickup timestamp |
+| delivery_completed_at | DATETIME | Delivery timestamp |
+| delivery_rating | DECIMAL(3,2) | Customer rating for delivery |
+| delivery_fee | DECIMAL(10,2) | Delivery charge (default ₹30) |
+
+## API Endpoints
+
+### Delivery Person APIs
+
+#### GET
+-- Delivery Person Table
+IF NOT EXISTS(SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'M_D_DELIVERY_PERSON' AND TABLE_SCHEMA='food')
+BEGIN
+    CREATE TABLE food.M_D_DELIVERY_PERSON (
+        delivery_person_id INT IDENTITY(1,1) PRIMARY KEY,
+        userid INT NOT NULL,
+        vehicle_type VARCHAR(50) NULL,
+        vehicle_number VARCHAR(50) NULL,
+        license_number VARCHAR(50) NULL,
+        is_available BIT DEFAULT 1,
+        current_latitude DECIMAL(10, 8) NULL,
+        current_longitude DECIMAL(11, 8) NULL,
+        rating DECIMAL(3,2) DEFAULT 5.0,
+        total_deliveries INT DEFAULT 0,
+        earnings_today DECIMAL(10,2) DEFAULT 0,
+        earnings_week DECIMAL(10,2) DEFAULT 0,
+        earnings_month DECIMAL(10,2) DEFAULT 0,
+        created_at DATETIME DEFAULT GETDATE(),
+        updated_at DATETIME NULL,
+        is_deleted BIT DEFAULT 0,
+        FOREIGN KEY (userid) REFERENCES food.M_S_USERS(userid)
+    );
+END
+GO
+
+-- Add delivery columns to Orders table
+IF NOT EXISTS(SELECT * FROM INFORMATION_SCHEMA.COLUMNS 
+    WHERE TABLE_NAME = 'M_D_ORDERS' AND COLUMN_NAME = 'delivery_person_id' AND TABLE_SCHEMA='food')
+BEGIN
+    ALTER TABLE food.M_D_ORDERS
+    ADD delivery_person_id INT NULL,
+        delivery_assigned_at DATETIME NULL,
+        delivery_picked_up_at DATETIME NULL,
+        delivery_completed_at DATETIME NULL,
+        delivery_rating DECIMAL(3,2) NULL,
+        delivery_fee DECIMAL(10,2) DEFAULT 30.00;
+END
+GO
+
+-- Update M_S_USERS role to include delivery
+-- Users can now register with role 'delivery'
+
+-- Sample delivery person insert (after user registration)
+-- INSERT INTO food.M_D_DELIVERY_PERSON (userid, vehicle_type, vehicle_number, license_number)
+-- VALUES (user_id, 'Bike', 'TN01AB1234', 'TN012023XXXXXX');
+
+SELECT * FROM food.M_D_DELIVERY_PERSON;
+SELECT * FROM food.M_D_ORDERS WHERE delivery_person_id IS NOT NULL;
+
+package com.bite.model;
+
+import java.math.BigDecimal;
+import java.util.Date;
+
+public class DeliveryPerson {
+    private int deliveryPersonId;
+    private int userId;
+    private String vehicleType;
+    private String vehicleNumber;
+    private String licenseNumber;
+    private boolean isAvailable;
+    private BigDecimal currentLatitude;
+    private BigDecimal currentLongitude;
+    private double rating;
+    private int totalDeliveries;
+    private double earningsToday;
+    private double earningsWeek;
+    private double earningsMonth;
+    private Date createdAt;
+    private Date updatedAt;
+    private boolean isDeleted;
+    
+    // For display purposes
+    private String name;
+    private String phoneNumber;
+    private String email;
+
+    public DeliveryPerson() {}
+
+    // Getters and Setters
+    public int getDeliveryPersonId() {
+        return deliveryPersonId;
+    }
+
+    public void setDeliveryPersonId(int deliveryPersonId) {
+        this.deliveryPersonId = deliveryPersonId;
+    }
+
+    public int getUserId() {
+        return userId;
+    }
+
+    public void setUserId(int userId) {
+        this.userId = userId;
+    }
+
+    public String getVehicleType() {
+        return vehicleType;
+    }
+
+    public void setVehicleType(String vehicleType) {
+        this.vehicleType = vehicleType;
+    }
+
+    public String getVehicleNumber() {
+        return vehicleNumber;
+    }
+
+    public void setVehicleNumber(String vehicleNumber) {
+        this.vehicleNumber = vehicleNumber;
+    }
+
+    public String getLicenseNumber() {
+        return licenseNumber;
+    }
+
+    public void setLicenseNumber(String licenseNumber) {
+        this.licenseNumber = licenseNumber;
+    }
+
+    public boolean isAvailable() {
+        return isAvailable;
+    }
+
+    public void setAvailable(boolean available) {
+        isAvailable = available;
+    }
+
+    public BigDecimal getCurrentLatitude() {
+        return currentLatitude;
+    }
+
+    public void setCurrentLatitude(BigDecimal currentLatitude) {
+        this.currentLatitude = currentLatitude;
+    }
+
+    public BigDecimal getCurrentLongitude() {
+        return currentLongitude;
+    }
+
+    public void setCurrentLongitude(BigDecimal currentLongitude) {
+        this.currentLongitude = currentLongitude;
+    }
+
+    public double getRating() {
+        return rating;
+    }
+
+    public void setRating(double rating) {
+        this.rating = rating;
+    }
+
+    public int getTotalDeliveries() {
+        return totalDeliveries;
+    }
+
+    public void setTotalDeliveries(int totalDeliveries) {
+        this.totalDeliveries = totalDeliveries;
+    }
+
+    public double getEarningsToday() {
+        return earningsToday;
+    }
+
+    public void setEarningsToday(double earningsToday) {
+        this.earningsToday = earningsToday;
+    }
+
+    public double getEarningsWeek() {
+        return earningsWeek;
+    }
+
+    public void setEarningsWeek(double earningsWeek) {
+        this.earningsWeek = earningsWeek;
+    }
+
+    public double getEarningsMonth() {
+        return earningsMonth;
+    }
+
+    public void setEarningsMonth(double earningsMonth) {
+        this.earningsMonth = earningsMonth;
+    }
+
+    public Date getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(Date createdAt) {
+        this.createdAt = createdAt;
+    }
+
+    public Date getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(Date updatedAt) {
+        this.updatedAt = updatedAt;
+    }
+
+    public boolean isDeleted() {
+        return isDeleted;
+    }
+
+    public void setDeleted(boolean deleted) {
+        isDeleted = deleted;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getPhoneNumber() {
+        return phoneNumber;
+    }
+
+    public void setPhoneNumber(String phoneNumber) {
+        this.phoneNumber = phoneNumber;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+}
+
+package com.bite.dao;
+
+import com.bite.model.DeliveryPerson;
+import com.bite.model.Order;
+import com.bite.model.OrderItem;
+import com.bite.util.DBConnection;
+import com.bite.util.DBUtil;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class DeliveryPersonDAO {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryPersonDAO.class);
+
+    public boolean createDeliveryPerson(DeliveryPerson dp) {
+        String sql = "INSERT INTO food.M_D_DELIVERY_PERSON (userid, vehicle_type, vehicle_number, license_number) VALUES (?, ?, ?, ?)";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, dp.getUserId());
+            ps.setString(2, dp.getVehicleType());
+            ps.setString(3, dp.getVehicleNumber());
+            ps.setString(4, dp.getLicenseNumber());
+            
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            logger.error("Error creating delivery person: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    public DeliveryPerson getDeliveryPersonByUserId(int userId) {
+        String sql = "SELECT dp.*, u.name, u.email, u.phonenumber FROM food.M_D_DELIVERY_PERSON dp " +
+                     "JOIN food.M_S_USERS u ON dp.userid = u.userid " +
+                     "WHERE dp.userid = ? AND dp.is_deleted = 0";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, userId);
+            rs = ps.executeQuery();
+
+            if (rs.next()) {
+                DeliveryPerson dp = new DeliveryPerson();
+                dp.setDeliveryPersonId(rs.getInt("delivery_person_id"));
+                dp.setUserId(rs.getInt("userid"));
+                dp.setVehicleType(rs.getString("vehicle_type"));
+                dp.setVehicleNumber(rs.getString("vehicle_number"));
+                dp.setLicenseNumber(rs.getString("license_number"));
+                dp.setAvailable(rs.getBoolean("is_available"));
+                dp.setRating(rs.getDouble("rating"));
+                dp.setTotalDeliveries(rs.getInt("total_deliveries"));
+                dp.setEarningsToday(rs.getDouble("earnings_today"));
+                dp.setEarningsWeek(rs.getDouble("earnings_week"));
+                dp.setEarningsMonth(rs.getDouble("earnings_month"));
+                dp.setName(rs.getString("name"));
+                dp.setEmail(rs.getString("email"));
+                dp.setPhoneNumber(rs.getString("phonenumber"));
+                return dp;
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching delivery person: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+        return null;
+    }
+
+    public List<Order> getAssignedOrders(int deliveryPersonId) {
+        List<Order> orders = new ArrayList<>();
+        String sql = "SELECT o.order_id, o.total_amount, o.status, o.order_date, o.delivery_fee, " +
+                     "r.name as restaurant_name, r.address as restaurant_address, r.phone_number as restaurant_phone, " +
+                     "u.name as customer_name, u.phonenumber as customer_phone, u.address as customer_address " +
+                     "FROM food.M_D_ORDERS o " +
+                     "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                     "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                     "WHERE o.delivery_person_id = ? AND o.status IN ('GIVEN_TO_DELIVERY', 'ON_THE_WAY') " +
+                     "AND o.is_deleted = 0 ORDER BY o.order_date DESC";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setTotalAmount(rs.getDouble("total_amount"));
+                order.setStatus(rs.getString("status"));
+                order.setOrderDate(rs.getString("order_date"));
+                order.setRestaurantName(rs.getString("restaurant_name"));
+                order.setCustomerName(rs.getString("customer_name"));
+                
+                // Store addresses in a map or extend Order model
+                Map<String, String> details = new HashMap<>();
+                details.put("restaurant_address", rs.getString("restaurant_address"));
+                details.put("restaurant_phone", rs.getString("restaurant_phone"));
+                details.put("customer_address", rs.getString("customer_address"));
+                details.put("customer_phone", rs.getString("customer_phone"));
+                details.put("delivery_fee", String.valueOf(rs.getDouble("delivery_fee")));
+                
+                orders.add(order);
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching assigned orders: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+        return orders;
+    }
+
+    public boolean updateDeliveryStatus(int orderId, String status) {
+        String sql = "UPDATE food.M_D_ORDERS SET status = ?, ";
+        
+        if ("ON_THE_WAY".equals(status)) {
+            sql += "delivery_picked_up_at = GETDATE(), ";
+        } else if ("DELIVERED".equals(status)) {
+            sql += "delivery_completed_at = GETDATE(), ";
+        }
+        
+        sql += "updated_at = GETDATE() WHERE order_id = ?";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setString(1, status);
+            ps.setInt(2, orderId);
+            
+            boolean updated = ps.executeUpdate() > 0;
+            
+            // If delivered, update earnings
+            if (updated && "DELIVERED".equals(status)) {
+                updateEarnings(conn, orderId);
+            }
+            
+            return updated;
+        } catch (SQLException e) {
+            logger.error("Error updating delivery status: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    private void updateEarnings(Connection conn, int orderId) {
+        String sql = "UPDATE food.M_D_DELIVERY_PERSON SET " +
+                     "total_deliveries = total_deliveries + 1, " +
+                     "earnings_today = earnings_today + (SELECT delivery_fee FROM food.M_D_ORDERS WHERE order_id = ?), " +
+                     "earnings_week = earnings_week + (SELECT delivery_fee FROM food.M_D_ORDERS WHERE order_id = ?), " +
+                     "earnings_month = earnings_month + (SELECT delivery_fee FROM food.M_D_ORDERS WHERE order_id = ?) " +
+                     "WHERE delivery_person_id = (SELECT delivery_person_id FROM food.M_D_ORDERS WHERE order_id = ?)";
+        
+        PreparedStatement ps = null;
+        try {
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, orderId);
+            ps.setInt(2, orderId);
+            ps.setInt(3, orderId);
+            ps.setInt(4, orderId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            logger.error("Error updating earnings: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closePreparedStatement(ps);
+        }
+    }
+
+    public List<Order> getDeliveryHistory(int deliveryPersonId) {
+        List<Order> orders = new ArrayList<>();
+        String sql = "SELECT o.order_id, o.total_amount, o.status, o.delivery_completed_at, o.delivery_fee, o.delivery_rating, " +
+                     "r.name as restaurant_name, u.name as customer_name " +
+                     "FROM food.M_D_ORDERS o " +
+                     "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                     "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                     "WHERE o.delivery_person_id = ? AND o.status = 'DELIVERED' " +
+                     "AND o.is_deleted = 0 ORDER BY o.delivery_completed_at DESC";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setTotalAmount(rs.getDouble("total_amount"));
+                order.setStatus(rs.getString("status"));
+                order.setOrderDate(rs.getString("delivery_completed_at"));
+                order.setRestaurantName(rs.getString("restaurant_name"));
+                order.setCustomerName(rs.getString("customer_name"));
+                order.setCustomerRatings(rs.getDouble("delivery_rating"));
+                orders.add(order);
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching delivery history: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+        return orders;
+    }
+
+    public boolean toggleAvailability(int deliveryPersonId, boolean isAvailable) {
+        String sql = "UPDATE food.M_D_DELIVERY_PERSON SET is_available = ?, updated_at = GETDATE() WHERE delivery_person_id = ?";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setBoolean(1, isAvailable);
+            ps.setInt(2, deliveryPersonId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            logger.error("Error toggling availability: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    public Map<String, Object> getDashboardStats(int deliveryPersonId) {
+        Map<String, Object> stats = new HashMap<>();
+        String sql = "SELECT total_deliveries, earnings_today, earnings_week, earnings_month, rating, is_available " +
+                     "FROM food.M_D_DELIVERY_PERSON WHERE delivery_person_id = ?";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            rs = ps.executeQuery();
+
+            if (rs.next()) {
+                stats.put("totalDeliveries", rs.getInt("total_deliveries"));
+                stats.put("earningsToday", rs.getDouble("earnings_today"));
+                stats.put("earningsWeek", rs.getDouble("earnings_week"));
+                stats.put("earningsMonth", rs.getDouble("earnings_month"));
+                stats.put("rating", rs.getDouble("rating"));
+                stats.put("isAvailable", rs.getBoolean("is_available"));
+                
+                // Get today's delivery count
+                String countSql = "SELECT COUNT(*) as today_count FROM food.M_D_ORDERS " +
+                                  "WHERE delivery_person_id = ? AND CAST(delivery_completed_at AS DATE) = CAST(GETDATE() AS DATE)";
+                PreparedStatement ps2 = conn.prepareStatement(countSql);
+                ps2.setInt(1, deliveryPersonId);
+                ResultSet rs2 = ps2.executeQuery();
+                if (rs2.next()) {
+                    stats.put("deliveriesToday", rs2.getInt("today_count"));
+                }
+                DBUtil.closeResources(rs2, ps2, null);
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching dashboard stats: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+        return stats;
+    }
+
+    public boolean updateDeliveryRating(int orderId, int rating) {
+        String sql = "UPDATE food.M_D_ORDERS SET delivery_rating = ? WHERE order_id = ?";
+        
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, rating);
+            ps.setInt(2, orderId);
+            
+            boolean updated = ps.executeUpdate() > 0;
+            
+            if (updated) {
+                updateDeliveryPersonRating(conn, orderId);
+            }
+            
+            return updated;
+        } catch (SQLException e) {
+            logger.error("Error updating delivery rating: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    private void updateDeliveryPersonRating(Connection conn, int orderId) {
+        String sql = "UPDATE food.M_D_DELIVERY_PERSON SET rating = " +
+                     "(SELECT AVG(CAST(delivery_rating AS FLOAT)) FROM food.M_D_ORDERS " +
+                     "WHERE delivery_person_id = (SELECT delivery_person_id FROM food.M_D_ORDERS WHERE order_id = ?) " +
+                     "AND delivery_rating IS NOT NULL) " +
+                     "WHERE delivery_person_id = (SELECT delivery_person_id FROM food.M_D_ORDERS WHERE order_id = ?)";
+        
+        PreparedStatement ps = null;
+        try {
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, orderId);
+            ps.setInt(2, orderId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            logger.error("Error updating delivery person rating: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closePreparedStatement(ps);
+        }
+    }
+}
+
+package com.bite.service;
+
+import com.bite.dao.DeliveryPersonDAO;
+import com.bite.model.DeliveryPerson;
+import com.bite.model.Order;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
+
+import java.util.List;
+import java.util.Map;
+
+public class DeliveryPersonService {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryPersonService.class);
+    private final DeliveryPersonDAO dao = new DeliveryPersonDAO();
+
+    public boolean registerDeliveryPerson(DeliveryPerson dp) {
+        logger.info("Registering delivery person for user: " + dp.getUserId());
+        try {
+            return dao.createDeliveryPerson(dp);
+        } catch (Exception e) {
+            logger.error("Error registering delivery person: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public DeliveryPerson getDeliveryPersonByUserId(int userId) {
+        logger.info("Fetching delivery person for user: " + userId);
+        try {
+            return dao.getDeliveryPersonByUserId(userId);
+        } catch (Exception e) {
+            logger.error("Error fetching delivery person: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public List<Order> getAssignedOrders(int deliveryPersonId) {
+        logger.info("Fetching assigned orders for delivery person: " + deliveryPersonId);
+        try {
+            return dao.getAssignedOrders(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching assigned orders: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean updateDeliveryStatus(int orderId, String status) {
+        logger.info("Updating delivery status for order: " + orderId + " to " + status);
+        try {
+            return dao.updateDeliveryStatus(orderId, status);
+        } catch (Exception e) {
+            logger.error("Error updating delivery status: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public List<Order> getDeliveryHistory(int deliveryPersonId) {
+        logger.info("Fetching delivery history for: " + deliveryPersonId);
+        try {
+            return dao.getDeliveryHistory(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching delivery history: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean toggleAvailability(int deliveryPersonId, boolean isAvailable) {
+        logger.info("Toggling availability for delivery person: " + deliveryPersonId);
+        try {
+            return dao.toggleAvailability(deliveryPersonId, isAvailable);
+        } catch (Exception e) {
+            logger.error("Error toggling availability: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public Map<String, Object> getDashboardStats(int deliveryPersonId) {
+        logger.info("Fetching dashboard stats for delivery person: " + deliveryPersonId);
+        try {
+            return dao.getDashboardStats(deliveryPersonId);
+        } catch (Exception e) {
+            logger.error("Error fetching dashboard stats: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    public boolean rateDelivery(int orderId, int rating) {
+        logger.info("Rating delivery for order: " + orderId + " with rating: " + rating);
+        try {
+            if (rating < 1 || rating > 5) {
+                logger.warn("Invalid rating value: " + rating);
+                return false;
+            }
+            return dao.updateDeliveryRating(orderId, rating);
+        } catch (Exception e) {
+            logger.error("Error rating delivery: " + e.getMessage(), e);
+            return false;
+        }
+    }
+}
+
+package com.bite.controller;
+
+import com.bite.model.DeliveryPerson;
+import com.bite.model.Order;
+import com.bite.model.ResponseMessage;
+import com.bite.model.User;
+import com.bite.service.DeliveryPersonService;
+import com.bite.util.LoggerUtil;
+import com.bite.util.RequestBodyParser;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import org.apache.log4j.Logger;
+
+import javax.servlet.http.*;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class DeliveryPersonServlet extends HttpServlet {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryPersonServlet.class);
+    private final DeliveryPersonService service = new DeliveryPersonService();
+    private final Gson gson = new Gson();
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("GET /DeliveryPerson request received");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                logger.warn("Unauthorized access to delivery dashboard");
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            User user = (User) session.getAttribute("user");
+            if (!"delivery".equalsIgnoreCase(user.getRole())) {
+                logger.warn("Non-delivery user accessing delivery endpoint");
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Delivery role required")));
+                return;
+            }
+
+            String action = req.getParameter("action");
+            int userId = user.getUserId();
+
+            DeliveryPerson dp = service.getDeliveryPersonByUserId(userId);
+            if (dp == null) {
+                logger.warn("Delivery person not found for user: " + userId);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Delivery profile not found")));
+                return;
+            }
+
+            switch (action != null ? action : "dashboard") {
+                case "dashboard":
+                    handleDashboard(dp, resp);
+                    break;
+                case "assignedOrders":
+                    handleAssignedOrders(dp, resp);
+                    break;
+                case "history":
+                    handleHistory(dp, resp);
+                    break;
+                case "profile":
+                    resp.getWriter().write(gson.toJson(dp));
+                    break;
+                default:
+                    resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                    resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Unknown action")));
+            }
+
+        } catch (Exception e) {
+            logger.error("Error in DeliveryPersonServlet GET: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    private void handleDashboard(DeliveryPerson dp, HttpServletResponse resp) throws IOException {
+        Map<String, Object> stats = service.getDashboardStats(dp.getDeliveryPersonId());
+        stats.put("name", dp.getName());
+        stats.put("vehicleType", dp.getVehicleType());
+        resp.getWriter().write(gson.toJson(stats));
+    }
+
+    private void handleAssignedOrders(DeliveryPerson dp, HttpServletResponse resp) throws IOException {
+        List<Order> orders = service.getAssignedOrders(dp.getDeliveryPersonId());
+        resp.getWriter().write(gson.toJson(orders));
+    }
+
+    private void handleHistory(DeliveryPerson dp, HttpServletResponse resp) throws IOException {
+        List<Order> orders = service.getDeliveryHistory(dp.getDeliveryPersonId());
+        resp.getWriter().write(gson.toJson(orders));
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("POST /DeliveryPerson request received");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            User user = (User) session.getAttribute("user");
+            String action = req.getParameter("action");
+
+            if ("register".equals(action)) {
+                handleRegisterDeliveryPerson(req, resp, user);
+            } else if ("delivery".equalsIgnoreCase(user.getRole())) {
+                DeliveryPerson dp = service.getDeliveryPersonByUserId(user.getUserId());
+                if (dp == null) {
+                    resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Delivery profile not found")));
+                    return;
+                }
+
+                switch (action != null ? action : "") {
+                    case "updateStatus":
+                        handleUpdateStatus(req, resp);
+                        break;
+                    case "toggleAvailability":
+                        handleToggleAvailability(dp, req, resp);
+                        break;
+                    default:
+                        resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                        resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Unknown action")));
+                }
+            } else {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Delivery role required")));
+            }
+
+        } catch (Exception e) {
+            logger.error("Error in DeliveryPersonServlet POST: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    private void handleRegisterDeliveryPerson(HttpServletRequest req, HttpServletResponse resp, User user) 
+            throws IOException {
+        try {
+            JsonObject json = RequestBodyParser.ParseJson(req);
+            
+            DeliveryPerson dp = new DeliveryPerson();
+            dp.setUserId(user.getUserId());
+            dp.setVehicleType(json.get("vehicleType").getAsString());
+            dp.setVehicleNumber(json.get("vehicleNumber").getAsString());
+            dp.setLicenseNumber(json.get("licenseNumber").getAsString());
+
+            boolean success = service.registerDeliveryPerson(dp);
+
+            if (success) {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Delivery profile created successfully", true)));
+            } else {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to create delivery profile", false)));
+            }
+        } catch (Exception e) {
+            logger.error("Error registering delivery person: " + e.getMessage(), e);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Invalid data provided", false)));
+        }
+    }
+
+    private void handleUpdateStatus(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        try {
+            JsonObject json = RequestBodyParser.ParseJson(req);
+            int orderId = json.get("orderId").getAsInt();
+            String status = json.get("status").getAsString();
+
+            boolean success = service.updateDeliveryStatus(orderId, status);
+
+            if (success) {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Status updated successfully", true)));
+            } else {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to update status", false)));
+            }
+        } catch (Exception e) {
+            logger.error("Error updating delivery status: " + e.getMessage(), e);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Invalid data", false)));
+        }
+    }
+
+    private void handleToggleAvailability(DeliveryPerson dp, HttpServletRequest req, HttpServletResponse resp) 
+            throws IOException {
+        try {
+            JsonObject json = RequestBodyParser.ParseJson(req);
+            boolean isAvailable = json.get("isAvailable").getAsBoolean();
+
+            boolean success = service.toggleAvailability(dp.getDeliveryPersonId(), isAvailable);
+
+            if (success) {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Availability updated", true)));
+            } else {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to update availability", false)));
+            }
+        } catch (Exception e) {
+            logger.error("Error toggling availability: " + e.getMessage(), e);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Invalid data", false)));
+        }
+    }
+}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BiteBuddy - Delivery Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="../Plugins/sweetalert2@11.js"></script>
+  <script src="../Plugins/Jquery/jquery-3.7.1.min 1.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    body { font-family: 'Poppins', sans-serif; background: #0f0f0f; color: #fff; }
+    .glass { background: rgba(255,255,255,0.04); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.06); }
+    .active-order { border-left: 4px solid #22c55e; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
+  </style>
+</head>
+<body class="min-h-screen">
+  
+  <nav class="bg-black/60 backdrop-blur-md px-8 py-4 flex items-center justify-between sticky top-0 z-50">
+    <h1 class="text-2xl font-bold text-orange-400">🚴 BiteBuddy Delivery</h1>
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <span id="deliveryPersonName" class="font-semibold"></span>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="availabilityToggle" class="sr-only peer">
+          <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
+          <span class="ml-3 text-sm font-medium" id="availabilityText">Offline</span>
+        </label>
+      </div>
+      <button id="logoutBtn" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </button>
+    </div>
+  </nav>
+
+  <main class="px-6 py-8 max-w-7xl mx-auto">
+    
+    <!-- Stats Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">🚀</div>
+        <p class="text-sm text-gray-400">Deliveries Today</p>
+        <h2 class="text-3xl font-bold text-orange-400" id="deliveriesToday">0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">💰</div>
+        <p class="text-sm text-gray-400">Earnings Today</p>
+        <h2 class="text-3xl font-bold text-green-400" id="earningsToday">₹0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">📊</div>
+        <p class="text-sm text-gray-400">This Week</p>
+        <h2 class="text-3xl font-bold text-blue-400" id="earningsWeek">₹0</h2>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl mb-2">⭐</div>
+        <p class="text-sm text-gray-400">Your Rating</p>
+        <h2 class="text-3xl font-bold text-yellow-400" id="deliveryRating">5.0</h2>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="mb-6 flex gap-4 border-b border-gray-700">
+      <button class="tab-btn active px-6 py-3 font-semibold" data-tab="active">
+        Active Deliveries
+      </button>
+      <button class="tab-btn px-6 py-3 font-semibold" data-tab="history">
+        Delivery History
+      </button>
+    </div>
+
+    <!-- Active Deliveries Section -->
+    <div id="activeTab" class="tab-content">
+      <div id="activeOrdersContainer" class="space-y-4">
+        <p class="text-center text-gray-400 py-10">No active deliveries</p>
+      </div>
+    </div>
+
+    <!-- History Section -->
+    <div id="historyTab" class="tab-content hidden">
+      <div id="historyContainer" class="space-y-4">
+        <p class="text-center text-gray-400 py-10">No delivery history</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="../js/deliveryDashboard.js"></script>
+</body>
+</html>
+
+$(document).ready(function() {
+    loadDashboard();
+    loadActiveOrders();
+    
+    // Auto-refresh active orders every 30 seconds
+    setInterval(loadActiveOrders, 30000);
+
+    // Tab switching
+    $(".tab-btn").on("click", function() {
+        const tab = $(this).data("tab");
+        
+        $(".tab-btn").removeClass("active border-b-2 border-orange-400");
+        $(this).addClass("active border-b-2 border-orange-400");
+        
+        $(".tab-content").addClass("hidden");
+        
+        if (tab === "active") {
+            $("#activeTab").removeClass("hidden");
+            loadActiveOrders();
+        } else if (tab === "history") {
+            $("#historyTab").removeClass("hidden");
+            loadHistory();
+        }
+    });
+
+    // Availability toggle
+    $("#availabilityToggle").on("change", function() {
+        const isAvailable = $(this).is(":checked");
+        toggleAvailability(isAvailable);
+    });
+
+    // Logout
+    $("#logoutBtn").click(function() {
+        Swal.fire({
+            title: "Logout",
+            text: "Are you sure you want to logout?",
+            icon: "question",
+            showCancelButton: true,
+            confirmButtonColor: "#f97316",
+            cancelButtonColor: "#6b7280",
+            confirmButtonText: "Yes, Logout"
+        }).then((result) => {
+            if (result.isConfirmed) {
+                logout();
+            }
+        });
+    });
+
+    // Status update handlers
+    $(document).on("click", ".pickup-btn", function() {
+        const orderId = $(this).data("order");
+        updateDeliveryStatus(orderId, "ON_THE_WAY");
+    });
+
+    $(document).on("click", ".deliver-btn", function() {
+        const orderId = $(this).data("order");
+        updateDeliveryStatus(orderId, "DELIVERED");
+    });
+});
+
+function loadDashboard() {
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/DeliveryPersonServlet?action=dashboard",
+        method: "GET",
+        dataType: "json",
+        success: function(data) {
+            $("#deliveryPersonName").text(data.name || "Delivery Person");
+            $("#deliveriesToday").text(data.deliveriesToday || 0);
+            $("#earningsToday").text("₹" + (data.earningsToday || 0).toFixed(2));
+            $("#earningsWeek").text("₹" + (data.earningsWeek || 0).toFixed(2));
+            $("#deliveryRating").text((data.rating || 5.0).toFixed(1));
+            
+            if (data.isAvailable) {
+                $("#availabilityToggle").prop("checked", true);
+                $("#availabilityText").text("Online").addClass("text-green-400");
+            } else {
+                $("#availabilityToggle").prop("checked", false);
+                $("#availabilityText").text("Offline").removeClass("text-green-400");
+            }
+        },
+        error: function(xhr) {
+            if (xhr.status === 401) {
+                window.location.href = "login.html";
+            } else {
+                Swal.fire("Error", "Failed to load dashboard", "error");
+            }
+        }
+    });
+}
+
+function loadActiveOrders() {
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/DeliveryPersonServlet?action=assignedOrders",
+        method: "GET",
+        dataType: "json",
+        success: function(orders) {
+            renderActiveOrders(orders);
+        },
+        error: function() {
+            $("#activeOrdersContainer").html('<p class="text-center text-red-400 py-10">Failed to load orders</p>');
+        }
+    });
+}
+
+function renderActiveOrders(orders) {
+    const container = $("#activeOrdersContainer");
+    container.empty();
+
+    if (!orders || orders.length === 0) {
+        container.html('<p class="text-center text-gray-400 py-10">No active deliveries</p>');
+        return;
+    }
+
+    orders.forEach(order => {
+        const statusColor = order.status === "GIVEN_TO_DELIVERY" ? "yellow" : "blue";
+        const card = `
+            <div class="glass rounded-2xl p-6 active-order">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-xl font-bold text-orange-400">Order #${order.orderId}</h3>
+                        <p class="text-sm text-gray-400">${order.orderDate}</p>
+                    </div>
+                    <span class="px-3 py-1 rounded-full text-xs font-semibold bg-${statusColor}-500 text-white">
+                        ${order.status}
+                    </span>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-4 mb-4">
+                    <div class="border-l-2 border-orange-400 pl-4">
+                        <p class="text-xs text-gray-400 mb-1">📍 Pickup</p>
+                        <p class="font-semibold">${order.restaurantName}</p>
+                    </div>
+                    <div class="border-l-2 border-green-400 pl-4">
+                        <p class="text-xs text-gray-400 mb-1">🏠 Delivery</p>
+                        <p class="font-semibold">${order.customerName}</p>
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-center mt-4 pt-4 border-t border-gray-700">
+                    <div>
+                        <p class="text-sm text-gray-400">Order Amount</p>
+                        <p class="text-xl font-bold text-green-400">₹${order.totalAmount.toFixed(2)}</p>
+                    </div>
+                    <div>
+                        ${order.status === "GIVEN_TO_DELIVERY" 
+                            ? `<button class="pickup-btn bg-blue-500 hover:bg-blue-600 px-6 py-2 rounded-lg transition" data-order="${order.orderId}">
+                                📦 Picked Up
+                               </button>`
+                            : `<button class="deliver-btn bg-green-500 hover:bg-green-600 px-6 py-2 rounded-lg transition" data-order="${order.orderId}">
+                                ✅ Delivered
+                               </button>`
+                        }
+                    </div>
+                </div>
+            </div>
+        `;
+        container.append(card);
+    });
+}
+
+function loadHistory() {
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/DeliveryPersonServlet?action=history",
+        method: "GET",
+        dataType: "json",
+        success: function(orders) {
+            renderHistory(orders);
+        },
+        error: function() {
+            $("#historyContainer").html('<p class="text-center text-red-400 py-10">Failed to load history</p>');
+        }
+    });
+}
+
+function renderHistory(orders) {
+    const container = $("#historyContainer");
+    container.empty();
+
+    if (!orders || orders.length === 0) {
+        container.html('<p class="text-center text-gray-400 py-10">No delivery history</p>');
+        return;
+    }
+
+    orders.forEach(order => {
+        const card = `
+            <div class="glass rounded-2xl p-6">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h3 class="text-lg font-bold">Order #${order.orderId}</h3>
+                        <p class="text-sm text-gray-400">${order.orderDate}</p>
+                        <p class="text-sm mt-2">${order.restaurantName} → ${order.customerName}</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-xl font-bold text-green-400">₹${order.totalAmount.toFixed(2)}</p>
+                        ${order.customerRatings 
+                            ? `<p class="text-sm text-yellow-400 mt-1">⭐ ${order.customerRatings.toFixed(1)}</p>`
+                            : '<p class="text-xs text-gray-500 mt-1">Not rated</p>'
+                        }
+                    </div>
+                </div>
+            </div>
+        `;
+        container.append(card);
+    });
+}
+
+function updateDeliveryStatus(orderId, status) {
+    const statusText = status === "ON_THE_WAY" ? "Picked Up" : "Delivered";
+    
+    Swal.fire({
+        title: "Confirm " + statusText,
+        text: "Are you sure you want to mark this as " + statusText.toLowerCase() + "?",
+        icon: "question",
+        showCancelButton: true,
+        confirmButtonColor: "#22c55e",
+        cancelButtonColor: "#6b7280",
+        confirmButtonText: "Yes, " + statusText
+    }).then((result) => {
+        if (result.isConfirmed) {
+            $.ajax({
+                url: "http://localhost:8080/BiteBudddy/DeliveryPersonServlet?action=updateStatus",
+                method: "POST",
+                contentType: "application/json",
+                data: JSON.stringify({ orderId: orderId, status: status }),
+                dataType: "json",
+                success: function(res) {
+                    if (res.status === "success") {
+                        Swal.fire({
+                            icon: "success",
+                            title: statusText + "!",
+                            text: "Status updated successfully",
+                            timer: 2000,
+                            showConfirmButton: false
+                        });
+                        loadActiveOrders();
+                        loadDashboard();
+                    } else {
+                        Swal.fire("Error", res.message || "Failed to update status", "error");
+                    }
+                },
+                error: function() {
+                    Swal.fire("Error", "Failed to update status", "error");
+                }
+            });
+        }
+    });
+}
+
+function toggleAvailability(isAvailable) {
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/DeliveryPersonServlet?action=toggleAvailability",
+        method: "POST",
+        contentType: "application/json",
+        data: JSON.stringify({ isAvailable: isAvailable }),
+        dataType: "json",
+        success: function(res) {
+            if (res.status === "success") {
+                if (isAvailable) {
+                    $("#availabilityText").text("Online").addClass("text-green-400");
+                    Swal.fire({
+                        icon: "success",
+                        title: "You're Online!",
+                        text: "You'll start receiving delivery requests",
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+                } else {
+                    $("#availabilityText").text("Offline").removeClass("text-green-400");
+                    Swal.fire({
+                        icon: "info",
+                        title: "You're Offline",
+                        text: "You won't receive new deliveries",
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+                }
+            } else {
+                $("#availabilityToggle").prop("checked", !isAvailable);
+                Swal.fire("Error", "Failed to update availability", "error");
+            }
+        },
+        error: function() {
+            $("#availabilityToggle").prop("checked", !isAvailable);
+            Swal.fire("Error", "Failed to update availability", "error");
+        }
+    });
+}
+
+function logout() {
+    $.ajax({
+        url: "http://localhost:8080/BiteBudddy/user",
+        type: "POST",
+        data: { action: "logout" },
+        dataType: "json",
+        success: function(res) {
+            if (res.status === "success") {
+                window.location.href = "login.html";
+            }
+        },
+        error: function() {
+            Swal.fire("Error", "Logout failed", "error");
+        }
+    });
+}
+
+package com.bite.controller;
+
+import com.bite.dao.OrderDAO;
+import com.bite.model.ResponseMessage;
+import com.bite.model.User;
+import com.bite.util.LoggerUtil;
+import com.google.gson.Gson;
+import org.apache.log4j.Logger;
+
+import javax.servlet.http.*;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
+
+import com.bite.util.DBConnection;
+import com.bite.util.DBUtil;
+
+/**
+ * Servlet for restaurant owners to assign orders to delivery personnel
+ */
+public class DeliveryAssignmentServlet extends HttpServlet {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryAssignmentServlet.class);
+    private final Gson gson = new Gson();
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("GET /DeliveryAssignment - Fetching available delivery persons");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            User user = (User) session.getAttribute("user");
+            if (!"restaurant".equalsIgnoreCase(user.getRole())) {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Restaurant role required")));
+                return;
+            }
+
+            List<Map<String, Object>> availableDelivery = getAvailableDeliveryPersons();
+            resp.getWriter().write(gson.toJson(availableDelivery));
+
+        } catch (Exception e) {
+            logger.error("Error fetching delivery persons: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("POST /DeliveryAssignment - Assigning order to delivery person");
+        resp.setContentType("application/json;charset=UTF-8");
+
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Not authenticated")));
+                return;
+            }
+
+            String orderIdStr = req.getParameter("orderId");
+            String deliveryPersonIdStr = req.getParameter("deliveryPersonId");
+
+            if (orderIdStr == null || deliveryPersonIdStr == null) {
+                resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Missing parameters")));
+                return;
+            }
+
+            int orderId = Integer.parseInt(orderIdStr);
+            int deliveryPersonId = Integer.parseInt(deliveryPersonIdStr);
+
+            boolean success = assignDeliveryPerson(orderId, deliveryPersonId);
+
+            if (success) {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Delivery person assigned successfully", true)));
+                logger.info("Order " + orderId + " assigned to delivery person " + deliveryPersonId);
+            } else {
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to assign delivery person", false)));
+            }
+
+        } catch (NumberFormatException e) {
+            logger.error("Invalid ID format: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Invalid ID format")));
+        } catch (Exception e) {
+            logger.error("Error assigning delivery person: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(new ResponseMessage<>("error", "Server error")));
+        }
+    }
+
+    private List<Map<String, Object>> getAvailableDeliveryPersons() {
+        List<Map<String, Object>> persons = new ArrayList<>();
+        String sql = "SELECT dp.delivery_person_id, u.name, u.phonenumber, dp.vehicle_type, " +
+                     "dp.rating, dp.total_deliveries " +
+                     "FROM food.M_D_DELIVERY_PERSON dp " +
+                     "JOIN food.M_S_USERS u ON dp.userid = u.userid " +
+                     "WHERE dp.is_available = 1 AND dp.is_deleted = 0 AND u.is_deleted = 0 " +
+                     "ORDER BY dp.rating DESC, dp.total_deliveries DESC";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                Map<String, Object> person = new HashMap<>();
+                person.put("deliveryPersonId", rs.getInt("delivery_person_id"));
+                person.put("name", rs.getString("name"));
+                person.put("phoneNumber", rs.getString("phonenumber"));
+                person.put("vehicleType", rs.getString("vehicle_type"));
+                person.put("rating", rs.getDouble("rating"));
+                person.put("totalDeliveries", rs.getInt("total_deliveries"));
+                persons.add(person);
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching available delivery persons: " + e.getMessage(), e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+
+        return persons;
+    }
+
+    private boolean assignDeliveryPerson(int orderId, int deliveryPersonId) {
+        String sql = "UPDATE food.M_D_ORDERS SET delivery_person_id = ?, " +
+                     "delivery_assigned_at = GETDATE(), status = 'GIVEN_TO_DELIVERY', " +
+                     "updated_at = GETDATE() WHERE order_id = ?";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            ps.setInt(2, orderId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            logger.error("Error assigning delivery person: " + e.getMessage(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+}
+
+# 🚴 Delivery Module Implementation Guide
+
+## Overview
+This module adds delivery personnel functionality to the BiteBuddy food delivery system.
+
+## Features
+
+### For Delivery Personnel:
+- ✅ Register as delivery person with vehicle details
+- ✅ Real-time dashboard with earnings & stats
+- ✅ View assigned deliveries
+- ✅ Update delivery status (Picked Up → On The Way → Delivered)
+- ✅ Toggle availability (Online/Offline)
+- ✅ View delivery history with ratings
+- ✅ Track daily/weekly/monthly earnings
+
+### For Restaurant Owners:
+- ✅ View available delivery personnel
+- ✅ Assign orders to delivery persons
+- ✅ Track delivery status
+
+## Implementation Steps
+
+### 1. Database Setup
+Run the SQL script from `delivery_schema` artifact:
+```sql
+-- Creates M_D_DELIVERY_PERSON table
+-- Adds delivery columns to M_D_ORDERS table
+```
+
+### 2. Backend Implementation
+
+#### Model Layer
+Add `DeliveryPerson.java` to `com.bite.model` package
+
+#### DAO Layer
+Add `DeliveryPersonDAO.java` to `com.bite.dao` package
+
+#### Service Layer
+Add `DeliveryPersonService.java` to `com.bite.service` package
+
+#### Controller Layer
+Add these servlets to `com.bite.controller`:
+- `DeliveryPersonServlet.java`
+- `DeliveryAssignmentServlet.java`
+
+### 3. Update Existing Files
+
+#### UserServlet.java
+Update `determineRedirectPage()` method:
+```java
+private String determineRedirectPage(String role) {
+    if ("superadmin".equalsIgnoreCase(role)) {
+        return "superAdmin.html";
+    } else if ("restaurant".equalsIgnoreCase(role)) {
+        return "restaurantdashboard.html";
+    } else if ("delivery".equalsIgnoreCase(role)) {
+        return "deliveryDashboard.html";  // NEW
+    } else {
+        return "restaurant.html";
+    }
+}
+```
+
+#### SessionFilter.java
+Add delivery page checks:
+```java
+private boolean isDeliveryPage(String page) {
+    return page.contains("/deliveryDashboard.html");
+}
+
+// In doFilter method, add:
+if (isDeliveryPage(page) && !"delivery".equalsIgnoreCase(userRole)) {
+    resp.sendRedirect(contextPath + getDashboardForRole(userRole));
+    return;
+}
+```
+
+#### register.html
+Update role options to include 'delivery':
+```html
+<select name="role">
+    <option value="">Select</option>
+    <option value="customer">Customer</option>
+    <option value="restaurant">Restaurant</option>
+    <option value="delivery">Delivery Personnel</option>  <!-- NEW -->
+</select>
+```
+
+### 4. Frontend Implementation
+
+Add to `HTML/` folder:
+- `deliveryDashboard.html`
+
+Add to `js/` folder:
+- `deliveryDashboard.js`
+
+### 5. Web.xml Configuration
+Add servlet mappings (see `web_xml_update` artifact)
+
+## Database Schema
+
+### M_D_DELIVERY_PERSON Table
+| Column | Type | Description |
+|--------|------|-------------|
+| delivery_person_id | INT | Primary Key |
+| userid | INT | Foreign Key to M_S_USERS |
+| vehicle_type | VARCHAR(50) | Bike/Car/Scooter |
+| vehicle_number | VARCHAR(50) | Vehicle registration |
+| license_number | VARCHAR(50) | Driving license |
+| is_available | BIT | Online status |
+| rating | DECIMAL(3,2) | Average rating |
+| total_deliveries | INT | Completed deliveries |
+| earnings_today | DECIMAL(10,2) | Today's earnings |
+| earnings_week | DECIMAL(10,2) | Week's earnings |
+| earnings_month | DECIMAL(10,2) | Month's earnings |
+
+### M_D_ORDERS (Updated)
+| New Column | Type | Description |
+|------------|------|-------------|
+| delivery_person_id | INT | Assigned delivery person |
+| delivery_assigned_at | DATETIME | Assignment timestamp |
+| delivery_picked_up_at | DATETIME | Pickup timestamp |
+| delivery_completed_at | DATETIME | Delivery timestamp |
+| delivery_rating | DECIMAL(3,2) | Customer rating for delivery |
+| delivery_fee | DECIMAL(10,2) | Delivery charge (default ₹30) |
+
+## API Endpoints
+
+### Delivery Person APIs
+
+#### GET
