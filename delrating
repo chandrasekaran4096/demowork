@@ -1,157 +1,369 @@
-package com.bite.model;
+package com.bite.dao;
 
-import java.util.Date;
-import java.util.List;
+import com.bite.model.CartItem;
+import com.bite.model.Order;
+import com.bite.model.OrderItem;
+import com.bite.util.DBConnection;
+import com.bite.util.DBUtil;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
 
-public class Order {
-    private int orderId;
-    private int restaurantId;
-    private int userId;
-    private String restaurantName;
-    private String orderDate;
-    private double totalAmount;
-    private String status;
-    private String paymentMode;
-    private List<CartItem> items;
-    private String customerName;
-    private List<OrderItem> itemss;
+import java.sql.*;
+import java.util.*;
 
-    // Restaurant rating
-    private Double customerRatings;
-    
-    // NEW: Delivery person rating
-    private Double deliveryPersonRating;
-    private String deliveryPersonReview;
+public class OrderDAO extends BaseDAO {
+    private static final Logger logger = LoggerUtil.getLogger(OrderDAO.class);
 
-    // Super admin purpose
-    private double amount;
-    private Date ordersDate;
-
-    public Double getCustomerRatings() {
-        return customerRatings;
+    public OrderDAO() {
+        super(OrderDAO.class);
     }
 
-    public void setCustomerRatings(Double customerRatings) {
-        this.customerRatings = customerRatings;
+    public int insertOrder(int userId, int restaurantId, double total, String payment, String address) {
+        String sql = "INSERT INTO food.M_D_ORDERS (restaurant_id, userid, order_date, total_amount, status, payment_mode, delivery_address) "
+                + "VALUES (?, ?, GETDATE(), ?, 'PLACED', ?, ?)";
+        
+        try {
+            return executeInsertWithGeneratedKey(sql, restaurantId, userId, total, payment, address);
+        } catch (DAOException e) {
+            logger.error("Error inserting order for user: " + userId, e);
+            return -1;
+        }
     }
 
-    public Double getDeliveryPersonRating() {
-        return deliveryPersonRating;
+    public boolean insertOrderItems(int orderId, List<CartItem> items) {
+        if (items == null || items.isEmpty()) {
+            logger.warn("No items to insert for order: " + orderId);
+            return false;
+        }
+
+        return executeTransaction(conn -> {
+            String sql = "INSERT INTO food.M_D_ORDER_ITEM (order_id, menu_id, quantity, total_amount) VALUES (?, ?, ?, ?)";
+            
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (CartItem item : items) {
+                    ps.setInt(1, orderId);
+                    ps.setInt(2, item.getMenuId());
+                    ps.setInt(3, item.getQuantity());
+                    ps.setDouble(4, item.getPrice() * item.getQuantity());
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+                return true;
+            }
+        });
     }
 
-    public void setDeliveryPersonRating(Double deliveryPersonRating) {
-        this.deliveryPersonRating = deliveryPersonRating;
+    public List<CartItem> getSelectedCartItems(int[] cartIds) {
+        if (cartIds == null || cartIds.length == 0) {
+            return new ArrayList<>();
+        }
+
+        String inClause = String.join(",", Arrays.stream(cartIds).mapToObj(String::valueOf).toArray(String[]::new));
+        String sql = "SELECT c.cart_id, c.quantity, m.menu_id, m.item_name, m.price, m.restaurant_id "
+                + "FROM food.M_D_CART c WITH (NOLOCK) "
+                + "JOIN food.M_D_MENU m WITH (NOLOCK) ON c.menu_id = m.menu_id "
+                + "WHERE c.cart_id IN (" + inClause + ") AND c.is_deleted = 0";
+
+        Connection conn = null;
+        Statement st = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            st = conn.createStatement();
+            rs = st.executeQuery(sql);
+
+            List<CartItem> list = new ArrayList<>();
+            while (rs.next()) {
+                CartItem item = new CartItem();
+                item.setCartId(rs.getInt("cart_id"));
+                item.setMenuId(rs.getInt("menu_id"));
+                item.setQuantity(rs.getInt("quantity"));
+                item.setPrice(rs.getDouble("price"));
+                item.setRestaurantId(rs.getInt("restaurant_id"));
+                item.setItemName(rs.getString("item_name"));
+                list.add(item);
+            }
+            return list;
+        } catch (SQLException e) {
+            logger.error("Error fetching selected cart items", e);
+            return new ArrayList<>();
+        } finally {
+            DBUtil.closeResultSet(rs);
+            if (st != null) {
+                try {
+                    st.close();
+                } catch (SQLException e) {
+                    logger.error("Error closing Statement", e);
+                }
+            }
+            DBUtil.closeConnection(conn);
+        }
     }
 
-    public String getDeliveryPersonReview() {
-        return deliveryPersonReview;
+    public List<Order> fetchOrdersByUser(int userId) {
+        String sql = "SELECT o.order_id, o.total_amount, o.status, o.order_date, r.name, "
+                + "o.customer_ratings, o.delivery_person_rating, o.delivery_person_review "
+                + "FROM food.M_D_ORDERS o WITH (NOLOCK) "
+                + "JOIN food.M_D_RESTAURANT r WITH (NOLOCK) ON o.restaurant_id = r.restaurant_id "
+                + "WHERE o.userid = ? AND o.is_deleted = 0 "
+                + "ORDER BY o.order_date DESC";
+
+        return executeQuery(sql, rs -> {
+            List<Order> orders = new ArrayList<>();
+            while (rs.next()) {
+                Order ord = new Order();
+                ord.setOrderId(rs.getInt("order_id"));
+                ord.setRestaurantName(rs.getString("name"));
+                ord.setTotalAmount(rs.getDouble("total_amount"));
+                ord.setStatus(rs.getString("status"));
+                ord.setOrderDate(rs.getString("order_date"));
+                
+                Double customerRating = (Double) rs.getObject("customer_ratings");
+                ord.setCustomerRatings(customerRating);
+                
+                Double deliveryRating = (Double) rs.getObject("delivery_person_rating");
+                ord.setDeliveryPersonRating(deliveryRating);
+                
+                ord.setDeliveryPersonReview(rs.getString("delivery_person_review"));
+                
+                ord.setItems(fetchOrderItems(rs.getInt("order_id")));
+                orders.add(ord);
+            }
+            return orders;
+        }, userId);
     }
 
-    public void setDeliveryPersonReview(String deliveryPersonReview) {
-        this.deliveryPersonReview = deliveryPersonReview;
+    private List<CartItem> fetchOrderItems(int orderId) {
+        String sql = "SELECT m.item_name, oi.quantity, oi.total_amount "
+                + "FROM food.M_D_ORDER_ITEM oi WITH (NOLOCK) "
+                + "JOIN food.M_D_MENU m WITH (NOLOCK) ON oi.menu_id = m.menu_id "
+                + "WHERE oi.order_id = ?";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, orderId);
+            rs = ps.executeQuery();
+
+            List<CartItem> items = new ArrayList<>();
+            while (rs.next()) {
+                CartItem item = new CartItem();
+                item.setItemName(rs.getString("item_name"));
+                item.setQuantity(rs.getInt("quantity"));
+                item.setPrice(rs.getDouble("total_amount"));
+                items.add(item);
+            }
+            return items;
+        } catch (SQLException e) {
+            logger.error("Error fetching order items for order: " + orderId, e);
+            return new ArrayList<>();
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
     }
 
-    public int getOrderId() {
-        return orderId;
+    public boolean copyOrderItemsToCart(int userId, int orderId) {
+        String sql = "INSERT INTO food.M_D_CART (userid, menu_id, quantity, is_deleted) "
+                + "SELECT ?, oi.menu_id, oi.quantity, 0 "
+                + "FROM food.M_D_ORDER_ITEM oi "
+                + "WHERE oi.order_id = ?";
+        
+        try {
+            int rows = executeUpdate(sql, userId, orderId);
+            return rows > 0;
+        } catch (DAOException e) {
+            logger.error("Error copying order items to cart. Order: " + orderId, e);
+            return false;
+        }
     }
 
-    public void setOrderId(int orderId) {
-        this.orderId = orderId;
+    public boolean deleteOrder(int orderId) {
+        return executeTransaction(conn -> {
+            try (PreparedStatement ps1 = conn.prepareStatement("DELETE FROM food.M_D_ORDER_ITEM WHERE order_id=?");
+                 PreparedStatement ps2 = conn.prepareStatement("UPDATE food.M_D_ORDERS SET is_deleted=1 WHERE order_id=?")) {
+                
+                ps1.setInt(1, orderId);
+                ps1.executeUpdate();
+
+                ps2.setInt(1, orderId);
+                ps2.executeUpdate();
+                
+                return true;
+            }
+        });
     }
 
-    public int getRestaurantId() {
-        return restaurantId;
+    public int getRestaurantIdByOrder(int orderId) {
+        String sql = "SELECT TOP 1 m.restaurant_id "
+                + "FROM food.M_D_ORDER_ITEM oi WITH (NOLOCK) "
+                + "JOIN food.M_D_MENU m WITH (NOLOCK) ON oi.menu_id = m.menu_id "
+                + "WHERE oi.order_id = ?";
+
+        try {
+            return executeQuery(sql, rs -> rs.next() ? rs.getInt(1) : -1, orderId);
+        } catch (DAOException e) {
+            logger.error("Error getting restaurant ID for order: " + orderId, e);
+            return -1;
+        }
     }
 
-    public void setRestaurantId(int restaurantId) {
-        this.restaurantId = restaurantId;
+    private List<OrderItem> getOrderItems(int orderId) throws SQLException {
+        String sql = "SELECT m.item_name, oi.quantity "
+                + "FROM food.M_D_ORDER_ITEM oi WITH (NOLOCK) "
+                + "JOIN food.M_D_MENU m WITH (NOLOCK) ON oi.menu_id = m.menu_id "
+                + "WHERE oi.order_id=? AND oi.is_deleted=0";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, orderId);
+            rs = ps.executeQuery();
+
+            List<OrderItem> items = new ArrayList<>();
+            while (rs.next()) {
+                OrderItem item = new OrderItem();
+                item.setItemName(rs.getString("item_name"));
+                item.setQuantity(rs.getInt("quantity"));
+                items.add(item);
+            }
+            return items;
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
     }
 
-    public int getUserId() {
-        return userId;
+    public boolean updateOrderStatus(int orderId, String status) {
+        String sql = "UPDATE food.M_D_ORDERS SET status=?, updated_at=GETDATE() WHERE order_id=?";
+        
+        try {
+            return executeUpdate(sql, status, orderId) > 0;
+        } catch (DAOException e) {
+            logger.error("Error updating order status for order: " + orderId, e);
+            return false;
+        }
     }
 
-    public void setUserId(int userId) {
-        this.userId = userId;
+    public List<Order> getIncomingOrdersByOwner(int ownerId) throws SQLException {
+        String sql = "SELECT o.order_id, o.userid, o.restaurant_id, r.name AS restaurant_name, "
+                + "u.name AS customer_name, o.total_amount, o.status, o.order_date "
+                + "FROM food.M_D_ORDERS o WITH (NOLOCK) "
+                + "JOIN food.M_S_USERS u WITH (NOLOCK) ON o.userid = u.userid "
+                + "JOIN food.M_D_RESTAURANT r WITH (NOLOCK) ON o.restaurant_id = r.restaurant_id "
+                + "WHERE r.userid = ? "
+                + "AND o.status NOT IN ('GIVEN_TO_DELIVERY', 'DELIVERED', 'CANCELLED') "
+                + "AND o.is_deleted = 0 "
+                + "ORDER BY o.order_date DESC";
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = DBConnection.getConnection();
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, ownerId);
+            rs = ps.executeQuery();
+
+            List<Order> orders = new ArrayList<>();
+            while (rs.next()) {
+                Order order = new Order();
+                order.setOrderId(rs.getInt("order_id"));
+                order.setCustomerName(rs.getString("customer_name"));
+                order.setRestaurantName(rs.getString("restaurant_name"));
+                order.setTotalAmount(rs.getDouble("total_amount"));
+                order.setStatus(rs.getString("status"));
+                order.setOrderDate(rs.getTimestamp("order_date").toString());
+                order.setItemss(getOrderItems(order.getOrderId()));
+                orders.add(order);
+            }
+            return orders;
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
     }
 
-    public String getRestaurantName() {
-        return restaurantName;
+    public boolean updateOrderRating(int orderId, int rating) {
+        String sql = "UPDATE food.M_D_ORDERS SET customer_ratings = ?, updated_at = GETDATE() WHERE order_id = ?";
+        
+        try {
+            return executeUpdate(sql, rating, orderId) > 0;
+        } catch (DAOException e) {
+            logger.error("Error updating order rating for order: " + orderId, e);
+            return false;
+        }
     }
 
-    public void setRestaurantName(String restaurantName) {
-        this.restaurantName = restaurantName;
+    public Integer getOrderRating(int orderId) {
+        String sql = "SELECT customer_ratings FROM food.M_D_ORDERS WITH (NOLOCK) WHERE order_id = ?";
+
+        try {
+            return executeQuery(sql, rs -> {
+                if (rs.next()) {
+                    return (Integer) rs.getObject("customer_ratings");
+                }
+                return null;
+            }, orderId);
+        } catch (DAOException e) {
+            logger.error("Error getting order rating for order: " + orderId, e);
+            return null;
+        }
     }
 
-    public String getOrderDate() {
-        return orderDate;
+    // NEW METHOD: Update delivery person rating
+    public boolean updateDeliveryPersonRating(int orderId, int rating, String review) {
+        String sql = "UPDATE food.M_D_ORDERS "
+                + "SET delivery_person_rating = ?, delivery_person_review = ?, updated_at = GETDATE() "
+                + "WHERE order_id = ?";
+        
+        try {
+            return executeUpdate(sql, rating, review, orderId) > 0;
+        } catch (DAOException e) {
+            logger.error("Error updating delivery person rating for order: " + orderId, e);
+            return false;
+        }
     }
 
-    public void setOrderDate(String orderDate) {
-        this.orderDate = orderDate;
+    // NEW METHOD: Get delivery person rating for an order
+    public Integer getDeliveryPersonRating(int orderId) {
+        String sql = "SELECT delivery_person_rating FROM food.M_D_ORDERS WITH (NOLOCK) WHERE order_id = ?";
+
+        try {
+            return executeQuery(sql, rs -> {
+                if (rs.next()) {
+                    return (Integer) rs.getObject("delivery_person_rating");
+                }
+                return null;
+            }, orderId);
+        } catch (DAOException e) {
+            logger.error("Error getting delivery person rating for order: " + orderId, e);
+            return null;
+        }
     }
 
-    public double getTotalAmount() {
-        return totalAmount;
-    }
+    // NEW METHOD: Check if order is delivered and can be rated
+    public boolean canRateDelivery(int orderId) {
+        String sql = "SELECT status FROM food.M_D_ORDERS WITH (NOLOCK) WHERE order_id = ?";
 
-    public void setTotalAmount(double totalAmount) {
-        this.totalAmount = totalAmount;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
-    public String getPaymentMode() {
-        return paymentMode;
-    }
-
-    public void setPaymentMode(String paymentMode) {
-        this.paymentMode = paymentMode;
-    }
-
-    public List<CartItem> getItems() {
-        return items;
-    }
-
-    public void setItems(List<CartItem> items) {
-        this.items = items;
-    }
-
-    public String getCustomerName() {
-        return customerName;
-    }
-
-    public void setCustomerName(String customerName) {
-        this.customerName = customerName;
-    }
-
-    public List<OrderItem> getItemss() {
-        return itemss;
-    }
-
-    public void setItemss(List<OrderItem> itemss) {
-        this.itemss = itemss;
-    }
-
-    public double getAmount() {
-        return amount;
-    }
-
-    public void setAmount(double amount) {
-        this.amount = amount;
-    }
-
-    public Date getOrdersDate() {
-        return ordersDate;
-    }
-
-    public void setOrdersDate(Date ordersDate) {
-        this.ordersDate = ordersDate;
+        try {
+            return executeQuery(sql, rs -> {
+                if (rs.next()) {
+                    String status = rs.getString("status");
+                    return "DELIVERED".equalsIgnoreCase(status) || "GIVEN_TO_DELIVERY".equalsIgnoreCase(status);
+                }
+                return false;
+            }, orderId);
+        } catch (DAOException e) {
+            logger.error("Error checking if order can be rated: " + orderId, e);
+            return false;
+        }
     }
 }
