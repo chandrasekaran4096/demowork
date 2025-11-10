@@ -1,110 +1,38 @@
--- ============================================
--- DELIVERY PERSON RATING SYSTEM
--- Database Schema Updates
--- ============================================
-
-USE SQLTraining;
-GO
-
--- 1. Add delivery_person_rating to M_D_ORDERS table
-IF NOT EXISTS (
-    SELECT * FROM sys.columns 
-    WHERE object_id = OBJECT_ID('food.M_D_ORDERS') 
-    AND name = 'delivery_person_rating'
-)
-BEGIN
-    ALTER TABLE food.M_D_ORDERS
-    ADD delivery_person_rating DECIMAL(3,2) NULL;
-    
-    PRINT 'Added delivery_person_rating column to M_D_ORDERS';
-END
-GO
-
--- 2. Add delivery_person_review to M_D_ORDERS table
-IF NOT EXISTS (
-    SELECT * FROM sys.columns 
-    WHERE object_id = OBJECT_ID('food.M_D_ORDERS') 
-    AND name = 'delivery_person_review'
-)
-BEGIN
-    ALTER TABLE food.M_D_ORDERS
-    ADD delivery_person_review VARCHAR(500) NULL;
-    
-    PRINT 'Added delivery_person_review column to M_D_ORDERS';
-END
-GO
-
--- 3. Update customer_rating column in M_D_DELIVERY_ASSIGNMENT to allow NULL
-ALTER TABLE food.M_D_DELIVERY_ASSIGNMENT
-ALTER COLUMN customer_rating DECIMAL(3,2) NULL;
-GO
-
--- 4. Create trigger to update delivery person average rating
-IF OBJECT_ID('food.trg_UpdateDeliveryPersonRating', 'TR') IS NOT NULL
-    DROP TRIGGER food.trg_UpdateDeliveryPersonRating;
-GO
-
-CREATE TRIGGER food.trg_UpdateDeliveryPersonRating
-ON food.M_D_ORDERS
-AFTER INSERT, UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Update delivery person rating based on orders they've delivered
-    UPDATE DP
-    SET DP.rating = AvgRatings.avg_rating
-    FROM food.M_S_DELIVERY_PERSON DP
-    INNER JOIN (
-        SELECT DA.delivery_person_id,
-               AVG(CAST(O.delivery_person_rating AS DECIMAL(3,2))) AS avg_rating
-        FROM food.M_D_ORDERS O
-        INNER JOIN food.M_D_DELIVERY_ASSIGNMENT DA 
-            ON O.order_id = DA.order_id
-        WHERE O.delivery_person_rating IS NOT NULL
-          AND O.is_deleted = 0
-          AND DA.is_deleted = 0
-          AND DA.delivery_status = 'DELIVERED'
-        GROUP BY DA.delivery_person_id
-    ) AvgRatings
-    ON DP.delivery_person_id = AvgRatings.delivery_person_id
-    WHERE DP.delivery_person_id IN (
-        SELECT DISTINCT DA.delivery_person_id
-        FROM food.M_D_DELIVERY_ASSIGNMENT DA
-        INNER JOIN inserted I ON DA.order_id = I.order_id
-        WHERE DA.delivery_status = 'DELIVERED'
-          AND DA.is_deleted = 0
-    );
-END
-GO
-
--- 5. Create index for better performance on delivery ratings
-IF NOT EXISTS (SELECT * FROM sys.indexes 
-    WHERE name = 'idx_orders_delivery_rating' 
-    AND object_id = OBJECT_ID('food.M_D_ORDERS'))
-BEGIN
-    CREATE INDEX idx_orders_delivery_rating 
-    ON food.M_D_ORDERS(delivery_person_rating)
-    WHERE is_deleted = 0 AND delivery_person_rating IS NOT NULL;
-    
-    PRINT 'Created index for delivery person ratings';
-END
-GO
-
--- 6. Verify the changes
-SELECT 
-    'M_D_ORDERS' AS TableName,
-    COLUMN_NAME, 
-    DATA_TYPE, 
-    NUMERIC_PRECISION,
-    NUMERIC_SCALE,
-    IS_NULLABLE
-FROM INFORMATION_SCHEMA.COLUMNS
-WHERE TABLE_SCHEMA = 'food' 
-  AND TABLE_NAME = 'M_D_ORDERS'
-  AND COLUMN_NAME IN ('customer_ratings', 'delivery_person_rating', 'delivery_person_review')
-ORDER BY ORDINAL_POSITION;
-GO
-
-PRINT 'Delivery person rating system schema updates completed successfully!';
-GO
+12:26:33 ERROR OrderService:58 - Error fetching orders: class java.math.BigDecimal cannot be cast to class java.lang.Double (java.math.BigDecimal and java.lang.Double are in module java.base of loader 'bootstrap')
+java.lang.ClassCastException: class java.math.BigDecimal cannot be cast to class java.lang.Double (java.math.BigDecimal and java.lang.Double are in module java.base of loader 'bootstrap')
+	at com.bite.dao.OrderDAO.lambda$3(OrderDAO.java:531)
+	at com.bite.dao.BaseDAO.executeQuery(BaseDAO.java:39)
+	at com.bite.dao.OrderDAO.fetchOrdersByUser(OrderDAO.java:521)
+	at com.bite.service.OrderService.getUserOrders(OrderService.java:54)
+	at com.bite.controller.OrderHistoryServlet.doGet(OrderHistoryServlet.java:40)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:529)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:623)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:199)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:144)
+	at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:51)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:168)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:144)
+	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:168)
+	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+	at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:482)
+	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:130)
+	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:93)
+	at org.apache.catalina.valves.AbstractAccessLogValve.invoke(AbstractAccessLogValve.java:656)
+	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:346)
+	at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:397)
+	at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:63)
+	at org.apache.coyote.AbstractProtocol$ConnectionHandler.process(AbstractProtocol.java:935)
+	at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1833)
+	at org.apache.tomcat.util.net.SocketProcessorBase.run(SocketProcessorBase.java:52)
+	at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:975)
+	at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:493)
+	at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+	at java.base/java.lang.Thread.run(Thread.java:832)
+12:26:33 ERROR OrderHistoryServlet:46 - Error fetching order history: Cannot invoke "java.util.List.size()" because "orders" is null
+java.lang.NullPointerException: Cannot invoke "java.util.List.size()" because "orders" is null
+	at com.bite.controller.OrderHistoryServlet.doGet(OrderHistoryServlet.java:43)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:529)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:623)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:199)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:144)
