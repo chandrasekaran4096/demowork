@@ -1,186 +1,110 @@
-package com.bite.dao;
+-- ============================================
+-- DELIVERY PERSON RATING SYSTEM
+-- Database Schema Updates
+-- ============================================
 
-import java.sql.*;
-import org.apache.log4j.Logger;
-import com.bite.util.DBConnection;
-import com.bite.util.DBUtil;
-import com.bite.util.LoggerUtil;
+USE SQLTraining;
+GO
 
-/**
- * Base DAO class providing reusable database operations
- * with proper exception handling and resource management
- */
-public abstract class BaseDAO {
-    protected final Logger logger;
+-- 1. Add delivery_person_rating to M_D_ORDERS table
+IF NOT EXISTS (
+    SELECT * FROM sys.columns 
+    WHERE object_id = OBJECT_ID('food.M_D_ORDERS') 
+    AND name = 'delivery_person_rating'
+)
+BEGIN
+    ALTER TABLE food.M_D_ORDERS
+    ADD delivery_person_rating DECIMAL(3,2) NULL;
     
-    protected BaseDAO(Class<?> clazz) {
-        this.logger = LoggerUtil.getLogger(clazz);
-    }
+    PRINT 'Added delivery_person_rating column to M_D_ORDERS';
+END
+GO
+
+-- 2. Add delivery_person_review to M_D_ORDERS table
+IF NOT EXISTS (
+    SELECT * FROM sys.columns 
+    WHERE object_id = OBJECT_ID('food.M_D_ORDERS') 
+    AND name = 'delivery_person_review'
+)
+BEGIN
+    ALTER TABLE food.M_D_ORDERS
+    ADD delivery_person_review VARCHAR(500) NULL;
     
-    /**
-     * Execute a query with proper resource management
-     */
-    protected <T> T executeQuery(String sql, ResultSetHandler<T> handler, Object... params) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
-        
-        try {
-            conn = DBConnection.getConnection();
-            if (conn == null) {
-                logger.error("Failed to get database connection");
-                throw new SQLException("Database connection is null");
-            }
-            
-            ps = conn.prepareStatement(sql);
-            setParameters(ps, params);
-            rs = ps.executeQuery();
-            
-            return handler.handle(rs);
-            
-        } catch (SQLException e) {
-            logger.error("Error executing query: " + sql, e);
-            throw new DAOException("Database query failed", e);
-        } finally {
-            DBUtil.closeResources(rs, ps, conn);
-        }
-    }
+    PRINT 'Added delivery_person_review column to M_D_ORDERS';
+END
+GO
+
+-- 3. Update customer_rating column in M_D_DELIVERY_ASSIGNMENT to allow NULL
+ALTER TABLE food.M_D_DELIVERY_ASSIGNMENT
+ALTER COLUMN customer_rating DECIMAL(3,2) NULL;
+GO
+
+-- 4. Create trigger to update delivery person average rating
+IF OBJECT_ID('food.trg_UpdateDeliveryPersonRating', 'TR') IS NOT NULL
+    DROP TRIGGER food.trg_UpdateDeliveryPersonRating;
+GO
+
+CREATE TRIGGER food.trg_UpdateDeliveryPersonRating
+ON food.M_D_ORDERS
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Update delivery person rating based on orders they've delivered
+    UPDATE DP
+    SET DP.rating = AvgRatings.avg_rating
+    FROM food.M_S_DELIVERY_PERSON DP
+    INNER JOIN (
+        SELECT DA.delivery_person_id,
+               AVG(CAST(O.delivery_person_rating AS DECIMAL(3,2))) AS avg_rating
+        FROM food.M_D_ORDERS O
+        INNER JOIN food.M_D_DELIVERY_ASSIGNMENT DA 
+            ON O.order_id = DA.order_id
+        WHERE O.delivery_person_rating IS NOT NULL
+          AND O.is_deleted = 0
+          AND DA.is_deleted = 0
+          AND DA.delivery_status = 'DELIVERED'
+        GROUP BY DA.delivery_person_id
+    ) AvgRatings
+    ON DP.delivery_person_id = AvgRatings.delivery_person_id
+    WHERE DP.delivery_person_id IN (
+        SELECT DISTINCT DA.delivery_person_id
+        FROM food.M_D_DELIVERY_ASSIGNMENT DA
+        INNER JOIN inserted I ON DA.order_id = I.order_id
+        WHERE DA.delivery_status = 'DELIVERED'
+          AND DA.is_deleted = 0
+    );
+END
+GO
+
+-- 5. Create index for better performance on delivery ratings
+IF NOT EXISTS (SELECT * FROM sys.indexes 
+    WHERE name = 'idx_orders_delivery_rating' 
+    AND object_id = OBJECT_ID('food.M_D_ORDERS'))
+BEGIN
+    CREATE INDEX idx_orders_delivery_rating 
+    ON food.M_D_ORDERS(delivery_person_rating)
+    WHERE is_deleted = 0 AND delivery_person_rating IS NOT NULL;
     
-    /**
-     * Execute an update/insert/delete with proper resource management
-     */
-    protected int executeUpdate(String sql, Object... params) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        
-        try {
-            conn = DBConnection.getConnection();
-            if (conn == null) {
-                logger.error("Failed to get database connection");
-                throw new SQLException("Database connection is null");
-            }
-            
-            ps = conn.prepareStatement(sql);
-            setParameters(ps, params);
-            
-            return ps.executeUpdate();
-            
-        } catch (SQLException e) {
-            logger.error("Error executing update: " + sql, e);
-            throw new DAOException("Database update failed", e);
-        } finally {
-            DBUtil.closeResources(ps, conn);
-        }
-    }
-    
-    /**
-     * Execute an insert and return generated key
-     */
-    protected int executeInsertWithGeneratedKey(String sql, Object... params) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
-        
-        try {
-            conn = DBConnection.getConnection();
-            if (conn == null) {
-                logger.error("Failed to get database connection");
-                throw new SQLException("Database connection is null");
-            }
-            
-            ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-            setParameters(ps, params);
-            ps.executeUpdate();
-            
-            rs = ps.getGeneratedKeys();
-            if (rs.next()) {
-                return rs.getInt(1);
-            }
-            
-            return -1;
-            
-        } catch (SQLException e) {
-            logger.error("Error executing insert: " + sql, e);
-            throw new DAOException("Database insert failed", e);
-        } finally {
-            DBUtil.closeResources(rs, ps, conn);
-        }
-    }
-    
-    /**
-     * Execute transaction with automatic commit/rollback
-     */
-    protected <T> T executeTransaction(TransactionCallback<T> callback) {
-        Connection conn = null;
-        
-        try {
-            conn = DBConnection.getConnection();
-            if (conn == null) {
-                logger.error("Failed to get database connection");
-                throw new SQLException("Database connection is null");
-            }
-            
-            conn.setAutoCommit(false);
-            
-            T result = callback.execute(conn);
-            
-            conn.commit();
-            return result;
-            
-        } catch (Exception e) {
-            logger.error("Transaction failed", e);
-            if (conn != null) {
-                try {
-                    conn.rollback();
-                    logger.info("Transaction rolled back successfully");
-                } catch (SQLException ex) {
-                    logger.error("Error rolling back transaction", ex);
-                }
-            }
-            throw new DAOException("Transaction execution failed", e);
-        } finally {
-            if (conn != null) {
-                try {
-                    conn.setAutoCommit(true);
-                } catch (SQLException e) {
-                    logger.error("Error resetting auto-commit", e);
-                }
-            }
-            DBUtil.closeConnection(conn);
-        }
-    }
-    
-    /**
-     * Set parameters in prepared statement
-     */
-    private void setParameters(PreparedStatement ps, Object... params) throws SQLException {
-        for (int i = 0; i < params.length; i++) {
-            ps.setObject(i + 1, params[i]);
-        }
-    }
-    
-    /**
-     * Functional interface for result set handling
-     */
-    @FunctionalInterface
-    protected interface ResultSetHandler<T> {
-        T handle(ResultSet rs) throws SQLException;
-    }
-    
-    /**
-     * Functional interface for transaction handling
-     */
-    @FunctionalInterface
-    protected interface TransactionCallback<T> {
-        T execute(Connection conn) throws Exception;
-    }
-    
-    /**
-     * Custom DAO exception
-     */
-    public static class DAOException extends RuntimeException {
-        public DAOException(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
-}
+    PRINT 'Created index for delivery person ratings';
+END
+GO
+
+-- 6. Verify the changes
+SELECT 
+    'M_D_ORDERS' AS TableName,
+    COLUMN_NAME, 
+    DATA_TYPE, 
+    NUMERIC_PRECISION,
+    NUMERIC_SCALE,
+    IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'food' 
+  AND TABLE_NAME = 'M_D_ORDERS'
+  AND COLUMN_NAME IN ('customer_ratings', 'delivery_person_rating', 'delivery_person_review')
+ORDER BY ORDINAL_POSITION;
+GO
+
+PRINT 'Delivery person rating system schema updates completed successfully!';
+GO
