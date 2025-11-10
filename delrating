@@ -1,457 +1,119 @@
-$(document).ready(function () {
+package com.bite.controller;
 
-  loadOrders();
+import com.bite.dao.OrderDAO;
+import com.bite.model.ResponseMessage;
+import com.bite.model.User;
+import com.google.gson.Gson;
+import org.apache.log4j.Logger;
+import com.bite.util.LoggerUtil;
+import javax.servlet.http.*;
+import java.io.IOException;
 
-  function toast(msg, color = "#ff7f50") {
-    Toastify({
-      text: msg,
-      duration: 3000,
-      close: true,
-      gravity: "top",
-      position: "right",
-      backgroundColor: color,
-      stopOnFocus: true
-    }).showToast();
-  }
+public class RateDeliveryPersonServlet extends HttpServlet {
+    private static final Logger logger = LoggerUtil.getLogger(RateDeliveryPersonServlet.class);
+    private final OrderDAO orderDao = new OrderDAO();
+    private final Gson gson = new Gson();
 
-  function loadOrders() {
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/OrderHistoryServlet",
-      method: "GET",
-      success: function (res) {
-        if (res.length === 0) {
-          $("#ordersContainer").html(`<p class="text-center text-gray-400">No orders found.</p>`);
-          return;
-        }
-
-        let html = "";
-        res.forEach(order => {
-          const items = order.items.map(i => `
-            <li class="flex justify-between text-sm">
-              <span>${i.itemName}</span>
-              <span>x${i.quantity}</span>
-            </li>
-          `).join("");
-
-          // Restaurant rating section
-          let restaurantRatingSection = "";
-          if (order.status === "DELIVERED" || order.status === "GIVEN_TO_DELIVERY") {
-            if (order.customerRatings && order.customerRatings > 0) {
-              restaurantRatingSection = `
-                <div class="rating-display flex items-center gap-1 mt-3">
-                  <span class="text-sm text-gray-400">Restaurant rating:</span>
-                  ${generateStarDisplay(order.customerRatings)}
-                </div>
-              `;
-            } else {
-              restaurantRatingSection = `
-                <div class="rating-section mt-3">
-                  <p class="text-sm text-gray-400 mb-2">Rate restaurant:</p>
-                  <div class="star-rating flex gap-1" data-order-id="${order.orderId}" data-type="restaurant">
-                    ${generateClickableStars()}
-                  </div>
-                </div>
-              `;
-            }
-          }
-
-          // NEW: Delivery person rating section
-          let deliveryRatingSection = "";
-          if (order.status === "DELIVERED") {
-            if (order.deliveryPersonRating && order.deliveryPersonRating > 0) {
-              deliveryRatingSection = `
-                <div class="delivery-rating-display mt-3">
-                  <div class="flex items-center gap-1">
-                    <span class="text-sm text-gray-400">Delivery rating:</span>
-                    ${generateStarDisplay(order.deliveryPersonRating)}
-                  </div>
-                  ${order.deliveryPersonReview ? `
-                    <p class="text-xs text-gray-500 mt-1 italic">"${order.deliveryPersonReview}"</p>
-                  ` : ''}
-                </div>
-              `;
-            } else {
-              deliveryRatingSection = `
-                <div class="delivery-rating-section mt-3 border-t border-gray-700 pt-3">
-                  <p class="text-sm text-gray-400 mb-2">Rate delivery person:</p>
-                  <div class="delivery-star-rating flex gap-1 mb-2" data-order-id="${order.orderId}">
-                    ${generateClickableStars()}
-                  </div>
-                  <textarea 
-                    id="delivery-review-${order.orderId}" 
-                    placeholder="Leave a review (optional)" 
-                    class="w-full p-2 bg-gray-800 rounded text-sm text-white border border-gray-600 focus:border-orange-400 focus:outline-none"
-                    rows="2"></textarea>
-                </div>
-              `;
-            }
-          }
-
-          html += `
-            <div class="bg-gray-900 rounded-2xl p-6 shadow-lg border border-gray-700 hover:scale-[1.02] transition-transform" data-order-id="${order.orderId}">
-              <div class="flex justify-between items-center">
-                <div>
-                  <p class="font-semibold text-orange-400">#${order.orderId}</p>
-                  <p>${order.restaurantName}</p>
-                  <p class="text-sm text-gray-400">${order.orderDate}</p>
-                </div>
-                <div class="text-right">
-                  <p class="text-lg font-bold text-orange-300">₹${order.totalAmount.toFixed(2)}</p>
-                  <p class="text-sm mt-1 ${statusColor(order.status)}">${order.status}</p>
-                </div>
-              </div>
-
-              <ul class="mt-3 border-t border-gray-700 pt-3">${items}</ul>
-
-              <div class="flex gap-4 mt-5 items-center flex-wrap">
-                <button class="reorder bg-orange-500 px-4 py-2 rounded-lg hover:bg-orange-600 transition" data-id="${order.orderId}">
-                  <i class="fa fa-redo"></i> Reorder
-                </button>
-                <button class="delete bg-red-600 px-4 py-2 rounded-lg hover:bg-red-700 transition" data-id="${order.orderId}">
-                  <i class="fa fa-trash"></i> Delete
-                </button>
-              </div>
-
-              <div class="ratings-container">
-                ${restaurantRatingSection}
-                ${deliveryRatingSection}
-              </div>
-            </div>
-          `;
-        });
-        $("#ordersContainer").html(html);
-      },
-      error: function (xhr, status, error) {
-        console.error("Error loading orders:", status);
-        if(xhr.status === 401) {
-          Swal.fire({
-            icon: "warning",
-            title: "Session Expired",
-            text: "Please login to continue.",
-            confirmButtonColor: "#f97316"
-          }).then(() => {
-            window.location.href = "login.html";
-          });
-          return;
-        }
-
-        Swal.fire({
-          icon: "error",
-          title: "Error Loading Orders",
-          text: "Something went wrong while fetching your orders. Please try again later.",
-          confirmButtonColor: "#f97316"
-        });
-        $("#ordersContainer").html(`<p class="text-center text-red-500 mt-4">Error loading orders. Please try again later.</p>`);
-      }
-    });
-  }
-
-  function generateClickableStars() {
-    let stars = "";
-    for (let i = 1; i <= 5; i++) {
-      stars += `<i class="far fa-star text-2xl cursor-pointer hover:text-yellow-400 transition" data-rating="${i}"></i>`;
-    }
-    return stars;
-  }
-
-  function generateStarDisplay(rating) {
-    let stars = "";
-    const actualRating = Math.round(rating);
-    for (let i = 1; i <= 5; i++) {
-      if (i <= actualRating) {
-        stars += `<i class="fas fa-star text-yellow-400 text-xl"></i>`;
-      } else {
-        stars += `<i class="far fa-star text-gray-400 text-xl"></i>`;
-      }
-    }
-    return stars;
-  }
-
-  // Restaurant rating click handler
-  $(document).on("click", ".star-rating i", function () {
-    const rating = $(this).data("rating");
-    const orderId = $(this).closest(".star-rating").data("order-id");
-    const starContainer = $(this).closest(".star-rating");
-    
-    starContainer.find("i").each(function(index) {
-      if (index < rating) {
-        $(this).removeClass("far").addClass("fas text-yellow-400");
-      } else {
-        $(this).removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-
-    Swal.fire({
-      title: "Rate this restaurant",
-      text: `You are giving ${rating} star${rating > 1 ? 's' : ''} to this restaurant.`,
-      icon: "question",
-      showCancelButton: true,
-      confirmButtonColor: "#ff7f50",
-      cancelButtonColor: "#6b7280",
-      confirmButtonText: "Submit Rating"
-    }).then((result) => {
-      if (result.isConfirmed) {
-        submitRestaurantRating(orderId, rating);
-      } else {
-        starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-  });
-
-  // NEW: Delivery person rating click handler
-  $(document).on("click", ".delivery-star-rating i", function () {
-    const rating = $(this).data("rating");
-    const orderId = $(this).closest(".delivery-star-rating").data("order-id");
-    const starContainer = $(this).closest(".delivery-star-rating");
-    
-    starContainer.find("i").each(function(index) {
-      if (index < rating) {
-        $(this).removeClass("far").addClass("fas text-yellow-400");
-      } else {
-        $(this).removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-
-    const review = $(`#delivery-review-${orderId}`).val();
-
-    Swal.fire({
-      title: "Rate delivery person",
-      html: `
-        <p>You are giving ${rating} star${rating > 1 ? 's' : ''} to the delivery person.</p>
-        ${review ? `<p class="text-sm text-gray-600 mt-2">Review: "${review}"</p>` : ''}
-      `,
-      icon: "question",
-      showCancelButton: true,
-      confirmButtonColor: "#ff7f50",
-      cancelButtonColor: "#6b7280",
-      confirmButtonText: "Submit Rating"
-    }).then((result) => {
-      if (result.isConfirmed) {
-        submitDeliveryRating(orderId, rating, review);
-      } else {
-        starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-  });
-
-  function submitRestaurantRating(orderId, rating) {
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/RateOrderServlet",
-      method: "POST",
-      data: { orderId: orderId, rating: rating },
-      dataType: "json",
-      success: function (res) {
-        if (res.status === "success" && res.data === true) {
-          toast("Thank you for rating the restaurant! ⭐", "#4caf50");
-          const orderContainer = $(`.bg-gray-900[data-order-id="${orderId}"]`);
-          const ratingSection = orderContainer.find(".rating-section");
-          
-          const ratingDisplay = `
-            <div class="rating-display flex items-center gap-1 mt-3">
-              <span class="text-sm text-gray-400">Restaurant rating:</span>
-              ${generateStarDisplay(rating)}
-            </div>
-          `;
-          
-          ratingSection.replaceWith(ratingDisplay);
-          
-        } else {
-          const errorMsg = res.message || "Failed to submit rating";
-          toast(errorMsg, "#ff5252");
-          
-          const starContainer = $(`.star-rating[data-order-id="${orderId}"]`);
-          starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
-        }
-      },
-      error: function (xhr, status, error) {
-        console.error("Rating submission error:", error);
-        toast("Server error. Please try again.", "#ff5252");
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        logger.info("POST /RateDeliveryPerson request received");
+        resp.setContentType("application/json");
+        resp.setCharacterEncoding("UTF-8");
         
-        const starContainer = $(`.star-rating[data-order-id="${orderId}"]`);
-        starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-  }
-
-  // NEW: Submit delivery person rating
-  function submitDeliveryRating(orderId, rating, review) {
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/RateDeliveryPersonServlet",
-      method: "POST",
-      data: { 
-        orderId: orderId, 
-        rating: rating,
-        review: review || ""
-      },
-      dataType: "json",
-      success: function (res) {
-        if (res.status === "success" && res.data === true) {
-          toast("Thank you for rating the delivery person! 🚴", "#4caf50");
-          const orderContainer = $(`.bg-gray-900[data-order-id="${orderId}"]`);
-          const deliverySection = orderContainer.find(".delivery-rating-section");
-          
-          const ratingDisplay = `
-            <div class="delivery-rating-display mt-3 border-t border-gray-700 pt-3">
-              <div class="flex items-center gap-1">
-                <span class="text-sm text-gray-400">Delivery rating:</span>
-                ${generateStarDisplay(rating)}
-              </div>
-              ${review ? `<p class="text-xs text-gray-500 mt-1 italic">"${review}"</p>` : ''}
-            </div>
-          `;
-          
-          deliverySection.replaceWith(ratingDisplay);
-          
-        } else {
-          const errorMsg = res.message || "Failed to submit delivery rating";
-          toast(errorMsg, "#ff5252");
-          
-          const starContainer = $(`.delivery-star-rating[data-order-id="${orderId}"]`);
-          starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
+        try {
+            HttpSession session = req.getSession(false);
+            if (session == null || session.getAttribute("user") == null) {
+                logger.warn("Unauthorized delivery rating attempt");
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Not authenticated", false)
+                ));
+                return;
+            }
+            
+            User user = (User) session.getAttribute("user");
+            if (!"customer".equalsIgnoreCase(user.getRole())) {
+                logger.warn("Non-customer attempted to rate delivery");
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Only customers can rate deliveries", false)
+                ));
+                return;
+            }
+            
+            String orderIdStr = req.getParameter("orderId");
+            String ratingStr = req.getParameter("rating");
+            String review = req.getParameter("review");
+            
+            if (orderIdStr == null || ratingStr == null) {
+                logger.warn("Missing required parameters");
+                resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Order ID and rating are required", false)
+                ));
+                return;
+            }
+            
+            int orderId = Integer.parseInt(orderIdStr);
+            int rating = Integer.parseInt(ratingStr);
+            
+            logger.info("Rating delivery person for order: " + orderId + " with rating: " + rating);
+            
+            // Validate rating
+            if (rating < 1 || rating > 5) {
+                logger.warn("Invalid rating value: " + rating);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Rating must be between 1 and 5", false)
+                ));
+                return;
+            }
+            
+            // Check if already rated
+            Integer existingRating = orderDao.getDeliveryPersonRating(orderId);
+            if (existingRating != null && existingRating > 0) {
+                logger.warn("Delivery person already rated for order: " + orderId);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "You have already rated this delivery", false)
+                ));
+                return;
+            }
+            
+            // Check if order can be rated (must be delivered)
+            if (!orderDao.canRateDelivery(orderId)) {
+                logger.warn("Order not eligible for rating: " + orderId);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Order must be delivered to rate", false)
+                ));
+                return;
+            }
+            
+            // Update delivery person rating
+            boolean success = orderDao.updateDeliveryPersonRating(orderId, rating, review);
+            
+            if (success) {
+                logger.info("Delivery rating submitted successfully for order: " + orderId);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("success", "Delivery rating submitted successfully", true)
+                ));
+            } else {
+                logger.warn("Failed to submit delivery rating for order: " + orderId);
+                resp.getWriter().write(gson.toJson(
+                    new ResponseMessage<>("error", "Failed to submit rating", false)
+                ));
+            }
+            
+        } catch (NumberFormatException e) {
+            logger.error("Invalid number format in rating request", e);
+            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Invalid order ID or rating", false)
+            ));
+        } catch (Exception e) {
+            logger.error("Error submitting delivery rating: " + e.getMessage(), e);
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.getWriter().write(gson.toJson(
+                new ResponseMessage<>("error", "Server error", false)
+            ));
         }
-      },
-      error: function (xhr, status, error) {
-        console.error("Delivery rating submission error:", error);
-        toast("Server error. Please try again.", "#ff5252");
-        
-        const starContainer = $(`.delivery-star-rating[data-order-id="${orderId}"]`);
-        starContainer.find("i").removeClass("fas text-yellow-400").addClass("far");
-      }
-    });
-  }
-
-  function statusColor(status) {
-    switch (status) {
-      case "DELIVERED": 
-      case "GIVEN_TO_DELIVERY": 
-        return "text-green-400";
-      case "PENDING": 
-      case "PLACED": 
-        return "text-yellow-400";
-      case "CANCELLED": 
-        return "text-red-400";
-      case "PREPARING":
-      case "PACKING":
-        return "text-blue-400";
-      default: 
-        return "text-gray-400";
     }
-  }
-
-  $(document).on("click", ".reorder", function () {
-    const id = $(this).data("id");
-
-    $.ajax({
-      url: "http://localhost:8080/BiteBudddy/ReorderServlet",
-      method: "POST",
-      data: { orderId: id },
-      success: function (res) {
-        if (res.conflict) {
-          Swal.fire({
-            title: "Replace Existing Cart?",
-            text: res.message || "Your cart has items from another restaurant. Replace it?",
-            icon: "warning",
-            showCancelButton: true,
-            confirmButtonColor: "#ff7f50",
-            cancelButtonColor: "#6b7280",
-            confirmButtonText: "Yes, Replace!"
-          }).then((result) => {
-            if (result.isConfirmed) {
-              $.ajax({
-                url: "http://localhost:8080/BiteBudddy/ReorderServlet",
-                method: "POST",
-                data: { orderId: id, replace: true },
-                success: function (r2) {
-                  if (r2.status === "success") {
-                    toast("Cart replaced and items added!", "#4caf50");
-                    window.location.href = "cart.html";
-                  } else {
-                    toast("Failed to reorder.", "#ff5252");
-                  }
-                }
-              });
-            }
-          });
-        } else if (res.status === "success") {
-          toast("Items added to your cart!", "#4caf50");
-          window.location.href = "cart.html";
-        } else {
-          toast("Failed to reorder.", "#ff5252");
-        }
-      }
-    });
-  });
-
-  $(document).on("click", ".delete", function () {
-    const id = $(this).data("id");
-
-    Swal.fire({
-      title: "Delete Order?",
-      text: "This action cannot be undone!",
-      icon: "warning",
-      showCancelButton: true,
-      confirmButtonColor: "#ef4444",
-      cancelButtonColor: "#6b7280",
-      confirmButtonText: "Yes, Delete"
-    }).then((result) => {
-      if (result.isConfirmed) {
-        $.ajax({
-          url: "http://localhost:8080/BiteBudddy/DeleteOrderServlet",
-          method: "POST",
-          data: { orderId: id },
-          success: function (res) {
-            if (res.status === "success") {
-              toast("Order deleted successfully!", "#4caf50");
-              loadOrders();
-            } else {
-              toast("Failed to delete order.", "#ff5252");
-            }
-          },
-          error: function () {
-            toast("Server error during delete.", "#ff5252");
-          }
-        });
-      }
-    });
-  });
-
-  $("#logoutBtn").click(function() {
-    Swal.fire({
-      title: "Logout Confirmation",
-      text: "Are you sure you want to log out?",
-      icon: "question",
-      showCancelButton: true,
-      confirmButtonColor: "#f97316",
-      cancelButtonColor: "#6b7280",
-      confirmButtonText: "Yes, Logout"
-    }).then((result) => {
-      if (result.isConfirmed) {
-        $.ajax({
-          url: "http://localhost:8080/BiteBudddy/user",
-          type: "POST",
-          data: { action: "logout" },
-          dataType: "json",
-          success: function(res) {
-            if (res.status === "success") {
-              Swal.fire({
-                icon: "success",
-                title: "Logged out!",
-                text: res.message,
-                showConfirmButton: false,
-                timer: 1500
-              });
-              setTimeout(() => {
-                window.location.href = res.redirect;
-              }, 1600);
-            } else {
-              Swal.fire("Error", res.message, "error");
-            }
-          },
-          error: function() {
-            Swal.fire("Error", "Server error during logout", "error");
-          }
-        });
-      }
-    });
-  });
-});
+}
