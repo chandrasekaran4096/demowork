@@ -1,0 +1,667 @@
+package com.bite.dao;
+
+import com.bite.model.DeliveryPerson;
+import com.bite.model.DeliveryAssignment;
+import com.bite.util.DBConnection;
+import com.bite.util.DBUtil;
+import com.bite.util.LoggerUtil;
+import org.apache.log4j.Logger;
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class DeliveryPersonDAO {
+    private static final Logger logger = LoggerUtil.getLogger(DeliveryPersonDAO.class);
+    private static final double COMMISSION_PERCENTAGE = 0.10;
+
+    public boolean createDeliveryPerson(DeliveryPerson dp) {
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        String sql = "INSERT INTO food.M_S_DELIVERY_PERSON (userid, vehicle_type, vehicle_number, license_number) VALUES (?, ?, ?, ?)";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, dp.getUserId());
+            ps.setString(2, dp.getVehicleType());
+            ps.setString(3, dp.getVehicleNumber());
+            ps.setString(4, dp.getLicenseNumber());
+
+            int rowsAffected = ps.executeUpdate();
+            logger.info("Delivery person created successfully for user: " + dp.getUserId());
+            return rowsAffected > 0;
+            
+        } catch (SQLException e) {
+            logger.error("Error creating delivery person for user: " + dp.getUserId(), e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    public DeliveryPerson getDeliveryPersonByUserId(int userId) {
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        String sql = "SELECT dp.*, u.name, u.email, u.phonenumber " +
+                    "FROM food.M_S_DELIVERY_PERSON dp " +
+                    "JOIN food.M_S_USERS u ON dp.userid = u.userid " +
+                    "WHERE dp.userid = ? AND dp.is_deleted = 0";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, userId);
+            rs = ps.executeQuery();
+
+            if (rs.next()) {
+                return mapResultSetToDeliveryPerson(rs);
+            }
+            
+            logger.debug("No delivery person found for user: " + userId);
+            return null;
+            
+        } catch (SQLException e) {
+            logger.error("Error fetching delivery person by userId: " + userId, e);
+            return null;
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+    }
+
+    public List<DeliveryAssignment> getMyDeliveries(int deliveryPersonId) {
+        List<DeliveryAssignment> assignments = new ArrayList<>();
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        String sql = "SELECT da.*, o.total_amount, o.order_date, o.delivery_address, " +
+                    "r.name AS restaurant_name, r.address AS restaurant_address, " +
+                    "u.name AS customer_name, u.phonenumber AS customer_phone " +
+                    "FROM food.M_D_DELIVERY_ASSIGNMENT da " +
+                    "JOIN food.M_D_ORDERS o ON da.order_id = o.order_id " +
+                    "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                    "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                    "WHERE da.delivery_person_id = ? AND da.is_deleted = 0 " +
+                    "ORDER BY da.assigned_at DESC";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, deliveryPersonId);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                assignments.add(mapResultSetToDeliveryAssignment(rs));
+            }
+            
+            logger.debug("Retrieved " + assignments.size() + " deliveries for person: " + deliveryPersonId);
+            
+        } catch (SQLException e) {
+            logger.error("Error fetching deliveries for person: " + deliveryPersonId, e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+
+        return assignments;
+    }
+
+    /**
+     * CRITICAL FIX: Update both delivery assignment AND order status
+     */
+    public boolean updateDeliveryStatus(int assignmentId, String status) {
+        Connection conn = null;
+        PreparedStatement psAssignment = null;
+        PreparedStatement psOrder = null;
+        PreparedStatement psIncrement = null;
+        ResultSet rs = null;
+
+        // SQL for updating assignment
+        String assignmentSql = "UPDATE food.M_D_DELIVERY_ASSIGNMENT " +
+                              "SET delivery_status = ?, updated_at = GETDATE() ";
+        
+        if ("PICKED_UP".equals(status)) {
+            assignmentSql += ", picked_up_at = GETDATE() ";
+        } else if ("DELIVERED".equals(status)) {
+            assignmentSql += ", delivered_at = GETDATE() ";
+        }
+        assignmentSql += "WHERE assignment_id = ?";
+
+        // SQL for updating order status - CRITICAL FIX
+        String orderSql = "UPDATE food.M_D_ORDERS " +
+                         "SET status = ?, updated_at = GETDATE() " +
+                         "WHERE order_id = (SELECT order_id FROM food.M_D_DELIVERY_ASSIGNMENT WHERE assignment_id = ?)";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            conn.setAutoCommit(false);
+            
+            // Update assignment status
+            psAssignment = conn.prepareStatement(assignmentSql);
+            psAssignment.setString(1, status);
+            psAssignment.setInt(2, assignmentId);
+            int assignmentRows = psAssignment.executeUpdate();
+            
+            if (assignmentRows == 0) {
+                logger.warn("No assignment found with ID: " + assignmentId);
+                conn.rollback();
+                return false;
+            }
+            
+            // Update order status - CRITICAL FIX
+            psOrder = conn.prepareStatement(orderSql);
+            
+            // Map delivery status to order status
+            String orderStatus = mapDeliveryStatusToOrderStatus(status);
+            psOrder.setString(1, orderStatus);
+            psOrder.setInt(2, assignmentId);
+            int orderRows = psOrder.executeUpdate();
+            
+            logger.info("Updated order status to: " + orderStatus + " for assignment: " + assignmentId);
+
+            // If delivered, increment total deliveries count
+            if ("DELIVERED".equals(status)) {
+                String incrementSql = "UPDATE food.M_S_DELIVERY_PERSON " +
+                                     "SET total_deliveries = total_deliveries + 1, updated_at = GETDATE() " +
+                                     "WHERE delivery_person_id = (SELECT delivery_person_id FROM food.M_D_DELIVERY_ASSIGNMENT WHERE assignment_id = ?)";
+                
+                psIncrement = conn.prepareStatement(incrementSql);
+                psIncrement.setInt(1, assignmentId);
+                psIncrement.executeUpdate();
+                
+                logger.info("Incremented delivery count for assignment: " + assignmentId);
+            }
+
+            conn.commit();
+            logger.info("Successfully updated delivery status to: " + status + " for assignment: " + assignmentId);
+            return true;
+            
+        } catch (SQLException e) {
+            logger.error("Error updating delivery status for assignment: " + assignmentId, e);
+            if (conn != null) {
+                try {
+                    conn.rollback();
+                    logger.info("Transaction rolled back for assignment: " + assignmentId);
+                } catch (SQLException ex) {
+                    logger.error("Error rolling back transaction", ex);
+                }
+            }
+            return false;
+        } finally {
+            DBUtil.closePreparedStatement(psIncrement);
+            DBUtil.closePreparedStatement(psOrder);
+            DBUtil.closeResources(psAssignment, conn);
+        }
+    }
+
+    /**
+     * Map delivery assignment status to order status
+     */
+    private String mapDeliveryStatusToOrderStatus(String deliveryStatus) {
+        switch (deliveryStatus) {
+            case "ASSIGNED":
+                return "GIVEN_TO_DELIVERY";
+            case "PICKED_UP":
+                return "OUT_FOR_DELIVERY";
+            case "DELIVERED":
+                return "DELIVERED";
+            case "CANCELLED":
+                return "CANCELLED";
+            default:
+                return "GIVEN_TO_DELIVERY";
+        }
+    }
+
+    public boolean updateAvailability(int deliveryPersonId, boolean isAvailable) {
+        Connection conn = null;
+        PreparedStatement ps = null;
+
+        String sql = "UPDATE food.M_S_DELIVERY_PERSON SET is_available = ?, updated_at = GETDATE() WHERE delivery_person_id = ?";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            ps.setBoolean(1, isAvailable);
+            ps.setInt(2, deliveryPersonId);
+
+            int rowsAffected = ps.executeUpdate();
+            logger.info("Updated availability for delivery person: " + deliveryPersonId + " to: " + isAvailable);
+            return rowsAffected > 0;
+            
+        } catch (SQLException e) {
+            logger.error("Error updating availability for delivery person: " + deliveryPersonId, e);
+            return false;
+        } finally {
+            DBUtil.closeResources(ps, conn);
+        }
+    }
+
+    public List<DeliveryPerson> getAllAvailableDeliveryPersons() {
+        List<DeliveryPerson> persons = new ArrayList<>();
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        String sql = "SELECT dp.*, u.name, u.email, u.phonenumber " +
+                    "FROM food.M_S_DELIVERY_PERSON dp " +
+                    "JOIN food.M_S_USERS u ON dp.userid = u.userid " +
+                    "WHERE dp.is_available = 1 AND dp.is_deleted = 0 AND dp.status = 'Active'";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            rs = ps.executeQuery();
+
+            while (rs.next()) {
+                persons.add(mapResultSetToDeliveryPerson(rs));
+            }
+            
+            logger.debug("Found " + persons.size() + " available delivery persons");
+            
+        } catch (SQLException e) {
+            logger.error("Error fetching available delivery persons", e);
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+
+        return persons;
+    }
+
+    public boolean assignDeliveryPerson(int orderId, int deliveryPersonId) {
+        Connection conn = null;
+        PreparedStatement psCheck = null;
+        PreparedStatement psInsert = null;
+        ResultSet rs = null;
+
+        String checkSql = "SELECT COUNT(*) FROM food.M_D_DELIVERY_ASSIGNMENT WHERE order_id = ? AND is_deleted = 0";
+        String insertSql = "INSERT INTO food.M_D_DELIVERY_ASSIGNMENT " +
+                          "(order_id, delivery_person_id, delivery_status, timeout_at) " +
+                          "VALUES (?, ?, 'ASSIGNED', DATEADD(MINUTE, 15, GETDATE()))";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            // Check if delivery already assigned
+            psCheck = conn.prepareStatement(checkSql);
+            psCheck.setInt(1, orderId);
+            rs = psCheck.executeQuery();
+            
+            if (rs.next() && rs.getInt(1) > 0) {
+                logger.warn("Delivery already assigned for order: " + orderId);
+                return false;
+            }
+            
+            // Insert new assignment
+            psInsert = conn.prepareStatement(insertSql);
+            psInsert.setInt(1, orderId);
+            psInsert.setInt(2, deliveryPersonId);
+
+            int rowsAffected = psInsert.executeUpdate();
+            
+            if (rowsAffected > 0) {
+                logger.info("Delivery assigned - Order: " + orderId + ", DP: " + deliveryPersonId + ", Timeout: 15 min");
+                return true;
+            }
+            
+            return false;
+            
+        } catch (SQLException e) {
+            logger.error("Error assigning delivery person to order: " + orderId, e);
+            return false;
+        } finally {
+            DBUtil.closeResultSet(rs);
+            DBUtil.closePreparedStatement(psCheck);
+            DBUtil.closeResources(psInsert, conn);
+        }
+    }
+
+    public DeliveryAssignment getAssignmentDetails(int orderId) {
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        String sql = "SELECT o.total_amount, o.delivery_address, " +
+                    "r.name AS restaurant_name, r.address AS restaurant_address, " +
+                    "u.name AS customer_name, u.phonenumber AS customer_phone " +
+                    "FROM food.M_D_ORDERS o " +
+                    "JOIN food.M_D_RESTAURANT r ON o.restaurant_id = r.restaurant_id " +
+                    "JOIN food.M_S_USERS u ON o.userid = u.userid " +
+                    "WHERE o.order_id = ?";
+
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            ps = conn.prepareStatement(sql);
+            ps.setInt(1, orderId);
+            rs = ps.executeQuery();
+
+            if (rs.next()) {
+                DeliveryAssignment da = new DeliveryAssignment();
+                da.setOrderId(orderId);
+                da.setOrderAmount(rs.getDouble("total_amount"));
+                da.setCustomerAddress(rs.getString("delivery_address"));
+                da.setRestaurantName(rs.getString("restaurant_name"));
+                da.setRestaurantAddress(rs.getString("restaurant_address"));
+                da.setCustomerName(rs.getString("customer_name"));
+                da.setCustomerPhone(rs.getString("customer_phone"));
+                da.setCommissionAmount(rs.getDouble("total_amount") * COMMISSION_PERCENTAGE);
+                
+                return da;
+            }
+            
+            return null;
+            
+        } catch (SQLException e) {
+            logger.error("Error fetching assignment details for order: " + orderId, e);
+            return null;
+        } finally {
+            DBUtil.closeResources(rs, ps, conn);
+        }
+    }
+
+    public boolean reassignDeliveryPerson(int orderId, int newDeliveryPersonId, String reason) {
+        Connection conn = null;
+        PreparedStatement psGetOld = null;
+        PreparedStatement psHistory = null;
+        PreparedStatement psUpdate = null;
+        PreparedStatement psUpdateOrder = null;
+        ResultSet rs = null;
+        
+        String getOldSql = 
+            "SELECT assignment_id, delivery_person_id, assigned_at " +
+            "FROM food.M_D_DELIVERY_ASSIGNMENT " +
+            "WHERE order_id = ? AND is_deleted = 0";
+        
+        String historySql = 
+            "INSERT INTO food.M_D_DELIVERY_ASSIGNMENT_HISTORY " +
+            "(assignment_id, order_id, delivery_person_id, assigned_at, timeout_at, status, reason) " +
+            "VALUES (?, ?, ?, ?, ?, 'REASSIGNED', ?)";
+        
+        String updateSql = 
+            "UPDATE food.M_D_DELIVERY_ASSIGNMENT " +
+            "SET delivery_person_id = ?, " +
+            "    previous_delivery_person_id = ?, " +
+            "    delivery_status = 'ASSIGNED', " +
+            "    assigned_at = GETDATE(), " +
+            "    timeout_at = DATEADD(MINUTE, 15, GETDATE()), " +
+            "    assignment_attempt = ISNULL(assignment_attempt, 1) + 1, " +
+            "    reassignment_reason = ?, " +
+            "    updated_at = GETDATE(), " +
+            "    delivery_notes = CONCAT(" +
+            "        ISNULL(delivery_notes, ''), " +
+            "        CHAR(13) + CHAR(10), " +
+            "        'Reassigned from DP#', ?, " +
+            "        ' to DP#', ?, " +
+            "        ' - Reason: ', ?, " +
+            "        ' - At: ', CONVERT(VARCHAR(20), GETDATE(), 120)" +
+            "    ) " +
+            "WHERE order_id = ? AND is_deleted = 0";
+        
+        String updateOrderSql = 
+            "UPDATE food.M_D_ORDERS " +
+            "SET status = 'GIVEN_TO_DELIVERY', " +
+            "    updated_at = GETDATE() " +
+            "WHERE order_id = ? AND is_deleted = 0";
+        
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            conn.setAutoCommit(false);
+            
+            // Get current assignment details
+            psGetOld = conn.prepareStatement(getOldSql);
+            psGetOld.setInt(1, orderId);
+            rs = psGetOld.executeQuery();
+            
+            if (!rs.next()) {
+                logger.error("No active assignment found for order: " + orderId);
+                conn.rollback();
+                return false;
+            }
+            
+            int assignmentId = rs.getInt("assignment_id");
+            int oldDeliveryPersonId = rs.getInt("delivery_person_id");
+            Timestamp assignedAt = rs.getTimestamp("assigned_at");
+            
+            // Archive to history
+            psHistory = conn.prepareStatement(historySql);
+            psHistory.setInt(1, assignmentId);
+            psHistory.setInt(2, orderId);
+            psHistory.setInt(3, oldDeliveryPersonId);
+            psHistory.setTimestamp(4, assignedAt);
+            psHistory.setTimestamp(5, new Timestamp(System.currentTimeMillis()));
+            psHistory.setString(6, reason != null ? reason : "Manual reassignment");
+            psHistory.executeUpdate();
+            
+            // Update assignment with new delivery person
+            psUpdate = conn.prepareStatement(updateSql);
+            psUpdate.setInt(1, newDeliveryPersonId);
+            psUpdate.setInt(2, oldDeliveryPersonId);
+            psUpdate.setString(3, reason != null ? reason : "Manual reassignment");
+            psUpdate.setInt(4, oldDeliveryPersonId);
+            psUpdate.setInt(5, newDeliveryPersonId);
+            psUpdate.setString(6, reason != null ? reason : "Manual reassignment");
+            psUpdate.setInt(7, orderId);
+            
+            int updateRows = psUpdate.executeUpdate();
+            
+            if (updateRows == 0) {
+                logger.warn("No assignment updated for order: " + orderId);
+                conn.rollback();
+                return false;
+            }
+            
+            // Update main order status back to GIVEN_TO_DELIVERY
+            psUpdateOrder = conn.prepareStatement(updateOrderSql);
+            psUpdateOrder.setInt(1, orderId);
+            psUpdateOrder.executeUpdate();
+            
+            conn.commit();
+            logger.info("Order " + orderId + " reassigned from DP#" + oldDeliveryPersonId + 
+                       " to DP#" + newDeliveryPersonId + " - Reason: " + reason);
+            return true;
+            
+        } catch (SQLException e) {
+            logger.error("Error reassigning delivery person for order " + orderId, e);
+            if (conn != null) {
+                try { 
+                    conn.rollback();
+                    logger.info("Transaction rolled back for order: " + orderId);
+                } catch (SQLException ex) {
+                    logger.error("Rollback failed", ex);
+                }
+            }
+            return false;
+        } finally {
+            DBUtil.closeResultSet(rs);
+            DBUtil.closePreparedStatement(psGetOld);
+            DBUtil.closePreparedStatement(psHistory);
+            DBUtil.closePreparedStatement(psUpdate);
+            DBUtil.closePreparedStatement(psUpdateOrder);
+            DBUtil.closeConnection(conn);
+        }
+    }
+
+    public int checkAndMarkTimedOutOrders() {
+        Connection conn = null;
+        PreparedStatement psFind = null;
+        PreparedStatement psUpdateAssignment = null;
+        PreparedStatement psUpdateOrder = null;
+        PreparedStatement psHistory = null;
+        ResultSet rs = null;
+        
+        String findSql = 
+            "SELECT assignment_id, order_id, delivery_person_id, assigned_at " +
+            "FROM food.M_D_DELIVERY_ASSIGNMENT " +
+            "WHERE delivery_status = 'ASSIGNED' " +
+            "  AND timeout_at < GETDATE() " +
+            "  AND is_deleted = 0";
+        
+        String historySql = 
+            "INSERT INTO food.M_D_DELIVERY_ASSIGNMENT_HISTORY " +
+            "(assignment_id, order_id, delivery_person_id, assigned_at, timeout_at, status, reason) " +
+            "VALUES (?, ?, ?, ?, GETDATE(), 'TIMED_OUT', 'No pickup within 15 minutes')";
+        
+        String updateAssignmentSql = 
+            "UPDATE food.M_D_DELIVERY_ASSIGNMENT " +
+            "SET delivery_status = 'REASSIGNING', " +
+            "    updated_at = GETDATE(), " +
+            "    delivery_notes = CONCAT(" +
+            "        ISNULL(delivery_notes, ''), " +
+            "        CHAR(13) + CHAR(10), " +
+            "        'TIMED OUT at ', CONVERT(VARCHAR(20), GETDATE(), 120), " +
+            "        ' - Awaiting reassignment'" +
+            "    ) " +
+            "WHERE assignment_id = ?";
+        
+        String updateOrderSql = 
+            "UPDATE food.M_D_ORDERS " +
+            "SET status = 'REASSIGNING', " +
+            "    updated_at = GETDATE() " +
+            "WHERE order_id = ? AND is_deleted = 0";
+        
+        int count = 0;
+        
+        try {
+            conn = DBConnection.getConnection();
+            if (conn == null) {
+                throw new SQLException("Failed to establish database connection");
+            }
+            
+            conn.setAutoCommit(false);
+            
+            psFind = conn.prepareStatement(findSql);
+            rs = psFind.executeQuery();
+            
+            psHistory = conn.prepareStatement(historySql);
+            psUpdateAssignment = conn.prepareStatement(updateAssignmentSql);
+            psUpdateOrder = conn.prepareStatement(updateOrderSql);
+            
+            while (rs.next()) {
+                int assignmentId = rs.getInt("assignment_id");
+                int orderId = rs.getInt("order_id");
+                int deliveryPersonId = rs.getInt("delivery_person_id");
+                Timestamp assignedAt = rs.getTimestamp("assigned_at");
+                
+                // Archive to history
+                psHistory.setInt(1, assignmentId);
+                psHistory.setInt(2, orderId);
+                psHistory.setInt(3, deliveryPersonId);
+                psHistory.setTimestamp(4, assignedAt);
+                psHistory.addBatch();
+                
+                // Update assignment status to REASSIGNING
+                psUpdateAssignment.setInt(1, assignmentId);
+                psUpdateAssignment.addBatch();
+                
+                // Update order status to REASSIGNING
+                psUpdateOrder.setInt(1, orderId);
+                psUpdateOrder.addBatch();
+                
+                count++;
+            }
+            
+            if (count > 0) {
+                psHistory.executeBatch();
+                psUpdateAssignment.executeBatch();
+                psUpdateOrder.executeBatch();
+                conn.commit();
+                logger.warn("Marked " + count + " orders as REASSIGNING due to timeout");
+            }
+            
+        } catch (SQLException e) {
+            logger.error("Error checking timed out orders", e);
+            if (conn != null) {
+                try { 
+                    conn.rollback();
+                    logger.info("Transaction rolled back for timeout check");
+                } catch (SQLException ex) {
+                    logger.error("Rollback failed", ex);
+                }
+            }
+        } finally {
+            DBUtil.closeResultSet(rs);
+            DBUtil.closePreparedStatement(psFind);
+            DBUtil.closePreparedStatement(psHistory);
+            DBUtil.closePreparedStatement(psUpdateAssignment);
+            DBUtil.closePreparedStatement(psUpdateOrder);
+            DBUtil.closeConnection(conn);
+        }
+        
+        return count;
+    }
+
+    // Helper method to map ResultSet to DeliveryPerson
+    private DeliveryPerson mapResultSetToDeliveryPerson(ResultSet rs) throws SQLException {
+        DeliveryPerson dp = new DeliveryPerson();
+        dp.setDeliveryPersonId(rs.getInt("delivery_person_id"));
+        dp.setUserId(rs.getInt("userid"));
+        dp.setVehicleType(rs.getString("vehicle_type"));
+        dp.setVehicleNumber(rs.getString("vehicle_number"));
+        dp.setLicenseNumber(rs.getString("license_number"));
+        dp.setAvailable(rs.getBoolean("is_available"));
+        dp.setTotalDeliveries(rs.getInt("total_deliveries"));
+        dp.setRating(rs.getDouble("rating"));
+        dp.setStatus(rs.getString("status"));
+        dp.setName(rs.getString("name"));
+        dp.setEmail(rs.getString("email"));
+        dp.setPhoneNumber(rs.getString("phonenumber"));
+        return dp;
+    }
+
+    // Helper method to map ResultSet to DeliveryAssignment
+    private DeliveryAssignment mapResultSetToDeliveryAssignment(ResultSet rs) throws SQLException {
+        DeliveryAssignment da = new DeliveryAssignment();
+        da.setAssignmentId(rs.getInt("assignment_id"));
+        da.setOrderId(rs.getInt("order_id"));
+        da.setDeliveryPersonId(rs.getInt("delivery_person_id"));
+        da.setAssignedAt(rs.getTimestamp("assigned_at"));
+        da.setPickedUpAt(rs.getTimestamp("picked_up_at"));
+        da.setDeliveredAt(rs.getTimestamp("delivered_at"));
+        da.setDeliveryStatus(rs.getString("delivery_status"));
+        da.setOrderAmount(rs.getDouble("total_amount"));
+        da.setRestaurantName(rs.getString("restaurant_name"));
+        da.setRestaurantAddress(rs.getString("restaurant_address"));
+        da.setCustomerName(rs.getString("customer_name"));
+        da.setCustomerPhone(rs.getString("customer_phone"));
+        da.setCustomerAddress(rs.getString("delivery_address"));
+        da.setCommissionAmount(rs.getDouble("total_amount") * COMMISSION_PERCENTAGE);
+        return da;
+    }
+}
