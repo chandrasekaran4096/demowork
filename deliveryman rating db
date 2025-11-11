@@ -1,0 +1,134 @@
+-- ============================================
+-- CRITICAL FIX: Add missing order status sync
+-- This ensures M_D_ORDERS status updates when delivery status changes
+-- ============================================
+
+USE SQLTraining;
+GO
+
+-- 1. Verify current order statuses
+SELECT DISTINCT status 
+FROM food.M_D_ORDERS 
+ORDER BY status;
+GO
+
+-- 2. Update existing orders with delivery assignments to proper status
+UPDATE o
+SET o.status = CASE 
+    WHEN da.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+    WHEN da.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+    WHEN da.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+    WHEN da.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+    WHEN da.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+    ELSE o.status
+END,
+o.updated_at = GETDATE()
+FROM food.M_D_ORDERS o
+INNER JOIN food.M_D_DELIVERY_ASSIGNMENT da 
+    ON o.order_id = da.order_id
+WHERE da.is_deleted = 0
+  AND o.status != CASE 
+        WHEN da.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+        WHEN da.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+        WHEN da.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+        WHEN da.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+        WHEN da.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+        ELSE o.status
+    END;
+GO
+
+PRINT 'Updated order statuses to match delivery assignment statuses';
+GO
+
+-- 3. Create a trigger to automatically sync order status with delivery status
+IF OBJECT_ID('food.trg_SyncOrderStatusFromDelivery', 'TR') IS NOT NULL
+    DROP TRIGGER food.trg_SyncOrderStatusFromDelivery;
+GO
+
+CREATE TRIGGER food.trg_SyncOrderStatusFromDelivery
+ON food.M_D_DELIVERY_ASSIGNMENT
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Update order status based on delivery assignment status changes
+    UPDATE o
+    SET o.status = CASE 
+        WHEN i.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+        WHEN i.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+        WHEN i.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+        WHEN i.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+        WHEN i.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+        ELSE o.status
+    END,
+    o.updated_at = GETDATE()
+    FROM food.M_D_ORDERS o
+    INNER JOIN inserted i ON o.order_id = i.order_id
+    WHERE i.is_deleted = 0
+      AND o.is_deleted = 0
+      AND o.status != CASE 
+            WHEN i.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+            WHEN i.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+            WHEN i.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+            WHEN i.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+            WHEN i.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+            ELSE o.status
+        END;
+END
+GO
+
+PRINT 'Created trigger to automatically sync order status with delivery status';
+GO
+
+-- 4. Verify the trigger was created
+SELECT 
+    name AS TriggerName,
+    OBJECT_NAME(parent_id) AS TableName,
+    create_date,
+    modify_date
+FROM sys.triggers
+WHERE name = 'trg_SyncOrderStatusFromDelivery';
+GO
+
+-- 5. Test the fix (optional - comment out if not needed)
+-- Check orders with delivery assignments
+SELECT 
+    o.order_id,
+    o.status AS order_status,
+    da.delivery_status,
+    CASE 
+        WHEN da.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+        WHEN da.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+        WHEN da.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+        WHEN da.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+        WHEN da.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+        ELSE 'UNKNOWN'
+    END AS expected_order_status,
+    CASE 
+        WHEN o.status = CASE 
+            WHEN da.delivery_status = 'ASSIGNED' THEN 'GIVEN_TO_DELIVERY'
+            WHEN da.delivery_status = 'PICKED_UP' THEN 'OUT_FOR_DELIVERY'
+            WHEN da.delivery_status = 'DELIVERED' THEN 'DELIVERED'
+            WHEN da.delivery_status = 'CANCELLED' THEN 'CANCELLED'
+            WHEN da.delivery_status = 'REASSIGNING' THEN 'REASSIGNING'
+        END THEN '✓ Synced'
+        ELSE '✗ Mismatch'
+    END AS sync_status
+FROM food.M_D_ORDERS o
+INNER JOIN food.M_D_DELIVERY_ASSIGNMENT da ON o.order_id = da.order_id
+WHERE da.is_deleted = 0
+  AND o.is_deleted = 0
+ORDER BY o.order_id DESC;
+GO
+
+PRINT '============================================';
+PRINT 'Delivery status sync fix applied successfully!';
+PRINT 'From now on, when delivery status changes:';
+PRINT '  ASSIGNED → GIVEN_TO_DELIVERY';
+PRINT '  PICKED_UP → OUT_FOR_DELIVERY';
+PRINT '  DELIVERED → DELIVERED';
+PRINT '  CANCELLED → CANCELLED';
+PRINT '  REASSIGNING → REASSIGNING';
+PRINT '============================================';
+GO
