@@ -1,0 +1,452 @@
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+import javax.servlet.*;
+import javax.servlet.annotation.*;
+import javax.servlet.http.*;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+@WebServlet("/uploadExcel")
+@MultipartConfig(maxFileSize = 16177215) // 15MB max
+public class ExcelToDBServlet extends HttpServlet {
+    
+    // Database configuration
+    private static final String DB_URL = "jdbc:mysql://localhost:3306/your_database";
+    private static final String DB_USER = "root";
+    private static final String DB_PASSWORD = "password";
+    
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) 
+            throws ServletException, IOException {
+        
+        response.setContentType("application/json");
+        PrintWriter out = response.getWriter();
+        
+        String tableName = request.getParameter("tableName");
+        Part filePart = request.getPart("file");
+        
+        // Validation
+        if (tableName == null || tableName.trim().isEmpty()) {
+            sendError(out, "Table name is required");
+            return;
+        }
+        
+        if (filePart == null) {
+            sendError(out, "Excel file is required");
+            return;
+        }
+        
+        // Sanitize table name to prevent SQL injection
+        tableName = sanitizeTableName(tableName);
+        
+        Connection conn = null;
+        
+        try {
+            // Load MySQL driver
+            Class.forName("com.mysql.cj.jdbc.Driver");
+            
+            // Get connection
+            conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+            conn.setAutoCommit(false);
+            
+            // Read Excel file
+            InputStream fileContent = filePart.getInputStream();
+            Workbook workbook = new XSSFWorkbook(fileContent);
+            Sheet sheet = workbook.getSheetAt(0);
+            
+            // Get headers from first row
+            Row headerRow = sheet.getRow(0);
+            if (headerRow == null) {
+                sendError(out, "Excel file is empty");
+                return;
+            }
+            
+            List<String> excelColumns = new ArrayList<>();
+            for (Cell cell : headerRow) {
+                String columnName = cell.getStringCellValue().trim();
+                if (!columnName.isEmpty()) {
+                    excelColumns.add(sanitizeColumnName(columnName));
+                }
+            }
+            
+            if (excelColumns.isEmpty()) {
+                sendError(out, "No valid columns found in Excel");
+                return;
+            }
+            
+            // Check if table exists
+            boolean tableExists = checkTableExists(conn, tableName);
+            
+            if (tableExists) {
+                // Get existing table columns
+                List<String> dbColumns = getTableColumns(conn, tableName);
+                
+                // Check for new columns in Excel that don't exist in DB
+                List<String> newColumns = new ArrayList<>();
+                for (String excelCol : excelColumns) {
+                    if (!columnExists(dbColumns, excelCol)) {
+                        newColumns.add(excelCol);
+                    }
+                }
+                
+                // Add new columns to table if any
+                if (!newColumns.isEmpty()) {
+                    addColumnsToTable(conn, tableName, newColumns);
+                }
+            } else {
+                // Create new table
+                createTable(conn, tableName, excelColumns);
+            }
+            
+            // Insert data from Excel
+            int rowsInserted = insertData(conn, tableName, sheet, excelColumns);
+            
+            // Commit transaction
+            conn.commit();
+            
+            // Close workbook
+            workbook.close();
+            
+            // Send success response
+            sendSuccess(out, "Successfully inserted " + rowsInserted + " rows into table " + tableName);
+            
+        } catch (Exception e) {
+            if (conn != null) {
+                try {
+                    conn.rollback();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            e.printStackTrace();
+            sendError(out, "Error: " + e.getMessage());
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+    
+    private boolean checkTableExists(Connection conn, String tableName) throws SQLException {
+        DatabaseMetaData meta = conn.getMetaData();
+        ResultSet rs = meta.getTables(null, null, tableName, new String[]{"TABLE"});
+        boolean exists = rs.next();
+        rs.close();
+        return exists;
+    }
+    
+    private List<String> getTableColumns(Connection conn, String tableName) throws SQLException {
+        List<String> columns = new ArrayList<>();
+        DatabaseMetaData meta = conn.getMetaData();
+        ResultSet rs = meta.getColumns(null, null, tableName, null);
+        while (rs.next()) {
+            columns.add(rs.getString("COLUMN_NAME").toLowerCase());
+        }
+        rs.close();
+        return columns;
+    }
+    
+    private boolean columnExists(List<String> columns, String columnName) {
+        return columns.contains(columnName.toLowerCase());
+    }
+    
+    private void createTable(Connection conn, String tableName, List<String> columns) 
+            throws SQLException {
+        StringBuilder sql = new StringBuilder("CREATE TABLE " + tableName + " (");
+        sql.append("id INT AUTO_INCREMENT PRIMARY KEY, ");
+        
+        for (int i = 0; i < columns.size(); i++) {
+            sql.append(columns.get(i)).append(" VARCHAR(500)");
+            if (i < columns.size() - 1) {
+                sql.append(", ");
+            }
+        }
+        sql.append(")");
+        
+        Statement stmt = conn.createStatement();
+        stmt.executeUpdate(sql.toString());
+        stmt.close();
+    }
+    
+    private void addColumnsToTable(Connection conn, String tableName, List<String> newColumns) 
+            throws SQLException {
+        Statement stmt = conn.createStatement();
+        
+        for (String column : newColumns) {
+            String sql = "ALTER TABLE " + tableName + " ADD COLUMN " + column + " VARCHAR(500)";
+            stmt.executeUpdate(sql);
+        }
+        
+        stmt.close();
+    }
+    
+    private int insertData(Connection conn, String tableName, Sheet sheet, 
+                          List<String> excelColumns) throws SQLException {
+        
+        // Get actual DB columns
+        List<String> dbColumns = getTableColumns(conn, tableName);
+        
+        // Filter excel columns to only include those that exist in DB
+        List<String> columnsToInsert = new ArrayList<>();
+        List<Integer> columnIndexes = new ArrayList<>();
+        
+        for (int i = 0; i < excelColumns.size(); i++) {
+            if (columnExists(dbColumns, excelColumns.get(i))) {
+                columnsToInsert.add(excelColumns.get(i));
+                columnIndexes.add(i);
+            }
+        }
+        
+        if (columnsToInsert.isEmpty()) {
+            return 0;
+        }
+        
+        // Prepare insert statement
+        StringBuilder sql = new StringBuilder("INSERT INTO " + tableName + " (");
+        sql.append(String.join(", ", columnsToInsert));
+        sql.append(") VALUES (");
+        sql.append(String.join(", ", Collections.nCopies(columnsToInsert.size(), "?")));
+        sql.append(")");
+        
+        PreparedStatement pstmt = conn.prepareStatement(sql.toString());
+        
+        int rowsInserted = 0;
+        
+        // Start from row 1 (skip header row 0)
+        for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+            Row row = sheet.getRow(i);
+            if (row == null) continue;
+            
+            boolean hasData = false;
+            
+            // Set parameters
+            for (int j = 0; j < columnIndexes.size(); j++) {
+                int cellIndex = columnIndexes.get(j);
+                Cell cell = row.getCell(cellIndex);
+                String cellValue = getCellValueAsString(cell);
+                
+                if (cellValue != null && !cellValue.trim().isEmpty()) {
+                    hasData = true;
+                }
+                
+                pstmt.setString(j + 1, cellValue);
+            }
+            
+            // Only insert if row has some data
+            if (hasData) {
+                pstmt.executeUpdate();
+                rowsInserted++;
+            }
+        }
+        
+        pstmt.close();
+        return rowsInserted;
+    }
+    
+    private String getCellValueAsString(Cell cell) {
+        if (cell == null) {
+            return "";
+        }
+        
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue();
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getDateCellValue().toString();
+                } else {
+                    return String.valueOf(cell.getNumericCellValue());
+                }
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                return cell.getCellFormula();
+            case BLANK:
+                return "";
+            default:
+                return "";
+        }
+    }
+    
+    private String sanitizeTableName(String tableName) {
+        // Remove any characters that aren't alphanumeric or underscore
+        return tableName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase();
+    }
+    
+    private String sanitizeColumnName(String columnName) {
+        // Remove any characters that aren't alphanumeric or underscore
+        String sanitized = columnName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase();
+        // Ensure it doesn't start with a number
+        if (sanitized.matches("^[0-9].*")) {
+            sanitized = "col_" + sanitized;
+        }
+        return sanitized;
+    }
+    
+    private void sendError(PrintWriter out, String message) {
+        out.print("{\"success\": false, \"message\": \"" + message + "\"}");
+        out.flush();
+    }
+    
+    private void sendSuccess(PrintWriter out, String message) {
+        out.print("{\"success\": true, \"message\": \"" + message + "\"}");
+        out.flush();
+    }
+}
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel to Database</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"],
+        input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <h1>Upload Excel to Database</h1>
+    
+    <form id="uploadForm">
+        <div class="form-group">
+            <label for="tableName">Table Name:</label>
+            <input type="text" id="tableName" name="tableName" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="file">Excel File:</label>
+            <input type="file" id="file" name="file" accept=".xlsx,.xls" required>
+        </div>
+        
+        <button type="submit" id="submitBtn">Upload</button>
+    </form>
+    
+    <div id="message"></div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            const messageDiv = document.getElementById('message');
+            
+            // Disable button and show loading
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Uploading...';
+            messageDiv.innerHTML = '';
+            
+            const formData = new FormData();
+            formData.append('tableName', document.getElementById('tableName').value);
+            formData.append('file', document.getElementById('file').files[0]);
+            
+            try {
+                const response = await fetch('uploadExcel', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="message success">' + result.message + '</div>';
+                    document.getElementById('uploadForm').reset();
+                } else {
+                    messageDiv.innerHTML = '<div class="message error">' + result.message + '</div>';
+                }
+            } catch (error) {
+                messageDiv.innerHTML = '<div class="message error">Error: ' + error.message + '</div>';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Upload';
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+      <dependencies>
+    <!-- Servlet API -->
+    <dependency>
+        <groupId>javax.servlet</groupId>
+        <artifactId>javax.servlet-api</artifactId>
+        <version>4.0.1</version>
+        <scope>provided</scope>
+    </dependency>
+    
+    <!-- Apache POI for Excel -->
+    <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi</artifactId>
+        <version>5.2.3</version>
+    </dependency>
+    
+    <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi-ooxml</artifactId>
+        <version>5.2.3</version>
+    </dependency>
+    
+    <!-- MySQL JDBC Driver -->
+    <dependency>
+        <groupId>mysql</groupId>
+        <artifactId>mysql-connector-java</artifactId>
+        <version>8.0.33</version>
+    </dependency>
+</dependencies>
