@@ -1,0 +1,265 @@
+// DBUtil.java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
+public class DBUtil {
+    private static final String URL = "jdbc:mysql://localhost:3306/your_db_name";
+    private static final String USER = "root";
+    private static final String PASSWORD = "your_password";
+
+    static {
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver"); // MySQL 8+
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(URL, USER, PASSWORD);
+    }
+}
+
+
+
+
+
+
+
+// ExcelUploadServlet.java
+import javax.servlet.ServletException;
+import javax.servlet.annotation.MultipartConfig;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.sql.Connection;
+
+@WebServlet("/uploadExcel")
+@MultipartConfig
+public class ExcelUploadServlet extends HttpServlet {
+
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+
+        String tableName = request.getParameter("tableName");
+        Part filePart = request.getPart("file");
+
+        if (tableName == null || tableName.trim().isEmpty() || filePart == null) {
+            response.getWriter().println("Table name and file are required.");
+            return;
+        }
+
+        try (InputStream fileContent = filePart.getInputStream();
+             Connection conn = DBUtil.getConnection()) {
+
+            ExcelToDBUtil.importExcelToTable(fileContent, tableName, conn);
+
+            response.getWriter().println("Data imported successfully into table: " + tableName);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.getWriter().println("Error: " + e.getMessage());
+        }
+    }
+}
+
+
+
+
+// ExcelToDBUtil.java
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.InputStream;
+import java.sql.*;
+import java.util.*;
+
+public class ExcelToDBUtil {
+
+    // === Public entry point ===
+    public static void importExcelToTable(InputStream excelStream, String rawTableName, Connection conn) throws Exception {
+        String tableName = sanitizeIdentifier(rawTableName);
+
+        try (Workbook workbook = new XSSFWorkbook(excelStream)) {
+            Sheet sheet = workbook.getSheetAt(0);
+
+            if (sheet == null) {
+                throw new RuntimeException("Excel sheet is empty.");
+            }
+
+            Row headerRow = sheet.getRow(0);
+            if (headerRow == null) {
+                throw new RuntimeException("First row must contain headers (column names).");
+            }
+
+            // Extract header names
+            List<String> columnNames = new ArrayList<>();
+            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                Cell cell = headerRow.getCell(i, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+                if (cell == null) continue;
+
+                String header = cell.toString().trim();
+                if (!header.isEmpty()) {
+                    String colName = sanitizeIdentifier(header);
+                    if (!columnNames.contains(colName)) {
+                        columnNames.add(colName);
+                    }
+                }
+            }
+
+            if (columnNames.isEmpty()) {
+                throw new RuntimeException("No valid column names found in header row.");
+            }
+
+            // Transaction handling
+            conn.setAutoCommit(false);
+            try {
+                ensureTableAndColumns(tableName, columnNames, conn);
+                insertData(sheet, tableName, columnNames, conn);
+                conn.commit();
+            } catch (Exception ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        }
+    }
+
+    // === Check table, create/alter columns ===
+    private static void ensureTableAndColumns(String tableName, List<String> excelColumns, Connection conn) throws SQLException {
+        if (!tableExists(tableName, conn)) {
+            createTable(tableName, excelColumns, conn);
+        } else {
+            addMissingColumns(tableName, excelColumns, conn);
+        }
+    }
+
+    // === Check if table exists in SQL Server ===
+    private static boolean tableExists(String tableName, Connection conn) throws SQLException {
+        DatabaseMetaData metaData = conn.getMetaData();
+        try (ResultSet rs = metaData.getTables(null, null, tableName, new String[]{"TABLE"})) {
+            return rs.next();
+        }
+    }
+
+    // === Create new table using NVARCHAR ===
+    private static void createTable(String tableName, List<String> columns, Connection conn) throws SQLException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("CREATE TABLE ").append(tableName).append(" (");
+
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append(columns.get(i)).append(" NVARCHAR(255)");
+            if (i < columns.size() - 1) {
+                sb.append(", ");
+            }
+        }
+        sb.append(")");
+
+        try (Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate(sb.toString());
+        }
+    }
+
+    // === Add missing columns (SQL Server syntax) ===
+    private static void addMissingColumns(String tableName, List<String> excelColumns, Connection conn) throws SQLException {
+        Set<String> existingColumns = new HashSet<>();
+
+        DatabaseMetaData metaData = conn.getMetaData();
+        try (ResultSet rs = metaData.getColumns(null, null, tableName, null)) {
+            while (rs.next()) {
+                existingColumns.add(rs.getString("COLUMN_NAME").toLowerCase());
+            }
+        }
+
+        for (String col : excelColumns) {
+            if (!existingColumns.contains(col.toLowerCase())) {
+                String sql = "ALTER TABLE " + tableName + " ADD " + col + " NVARCHAR(255)";
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.executeUpdate(sql);
+                }
+            }
+        }
+    }
+
+    // === Insert data into table ===
+    private static void insertData(Sheet sheet, String tableName, List<String> columns, Connection conn) throws SQLException {
+        String insertSql = buildInsertSQL(tableName, columns);
+
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) { // skip header
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                boolean allEmpty = true;
+
+                for (int colIndex = 0; colIndex < columns.size(); colIndex++) {
+                    Cell cell = row.getCell(colIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+                    String value = cellToString(cell);
+                    if (value != null && !value.isEmpty()) {
+                        allEmpty = false;
+                    }
+                    ps.setString(colIndex + 1, value);
+                }
+
+                if (!allEmpty) {
+                    ps.addBatch();
+                }
+            }
+            ps.executeBatch();
+        }
+    }
+
+    // === Build dynamic INSERT query ===
+    private static String buildInsertSQL(String tableName, List<String> columns) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("INSERT INTO ").append(tableName).append(" (");
+
+        sb.append(String.join(", ", columns)).append(") VALUES (");
+        sb.append("?,".repeat(columns.size()));
+        sb.setLength(sb.length() - 1); // remove last comma
+        sb.append(")");
+
+        return sb.toString();
+    }
+
+    // === Convert Excel cell to String (universal) ===
+    private static String cellToString(Cell cell) {
+        if (cell == null) return null;
+
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue().trim();
+            case NUMERIC:
+                return DateUtil.isCellDateFormatted(cell)
+                        ? cell.getDateCellValue().toString()
+                        : String.valueOf(cell.getNumericCellValue());
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                try {
+                    return cell.getStringCellValue();
+                } catch (IllegalStateException e) {
+                    return String.valueOf(cell.getNumericCellValue());
+                }
+            default:
+                return null;
+        }
+    }
+
+    // === Sanitize column/table names safely ===
+    private static String sanitizeIdentifier(String name) {
+        name = name.trim().replaceAll("[^a-zA-Z0-9_]", "_");
+        if (name.isEmpty() || Character.isDigit(name.charAt(0))) {
+            name = "C_" + name;
+        }
+        return name.toUpperCase(); // SQL Server is case-insensitive
+    }
+}
+
+
+
+
