@@ -1,0 +1,563 @@
+Nice, this is a great improvement step 👍
+I’ll first explain the change in simple terms, then give you all updated files.
+
+
+---
+
+🔁 What changed in insert logic?
+
+Previously:
+
+For every column, we did:
+
+ps.setString(colIndex + 1, value);
+
+So even if the DB column was INT or DOUBLE, we always sent a String.
+
+
+Now:
+
+We look at the SQL type from JSON (like INT, DOUBLE, DATE, VARCHAR(50)).
+
+We parse the Excel cell to the correct Java type, then call:
+
+ps.setInt(...)    for integer types
+
+ps.setLong(...)   for BIGINT
+
+ps.setDouble(...) for decimal/float/double
+
+ps.setBoolean(...) for boolean/bit
+
+ps.setDate(...)   for DATE
+
+ps.setTimestamp(...) for DATETIME/TIMESTAMP
+
+ps.setString(...) for text/varchar
+
+
+
+If the cell is empty, we call ps.setNull(...) with the correct java.sql.Types constant.
+
+
+---
+
+✅ Updated Files
+
+1. DBUtil.java (same as before)
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
+public class DBUtil {
+    private static final String URL = "jdbc:mysql://localhost:3306/your_db_name";
+    private static final String USER = "root";
+    private static final String PASSWORD = "your_password";
+
+    static {
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver"); // MySQL 8+
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(URL, USER, PASSWORD);
+    }
+}
+
+
+---
+
+2. ColumnConfig.java
+
+public class ColumnConfig {
+    private String name;
+    private String type; // e.g., "VARCHAR(100)", "INT", "DOUBLE", "DATE"
+
+    public String getName() {
+        return name;
+    }
+
+    public String getType() {
+        return type;
+    }
+}
+
+
+---
+
+3. TableConfig.java
+
+import java.util.List;
+
+public class TableConfig {
+    private String tableName;
+    private List<ColumnConfig> columns;
+
+    public String getTableName() {
+        return tableName;
+    }
+
+    public List<ColumnConfig> getColumns() {
+        return columns;
+    }
+}
+
+
+---
+
+4. ConfigLoader.java (uses Gson)
+
+import com.google.gson.Gson;
+
+import java.io.FileReader;
+import java.io.Reader;
+
+public class ConfigLoader {
+
+    public static TableConfig loadFromJson(String jsonPath) throws Exception {
+        Gson gson = new Gson();
+        try (Reader reader = new FileReader(jsonPath)) {
+            return gson.fromJson(reader, TableConfig.class);
+        }
+    }
+}
+
+
+---
+
+5. ✅ Updated ExcelToDBUtil.java (with typed setters)
+
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.InputStream;
+import java.sql.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
+
+public class ExcelToDBUtil {
+
+    // === Public entry point ===
+    public static void importExcelToTable(InputStream excelStream, TableConfig config, Connection conn) throws Exception {
+        String tableName = config.getTableName();
+
+        try (Workbook workbook = new XSSFWorkbook(excelStream)) {
+            Sheet sheet = workbook.getSheetAt(0);
+
+            if (sheet == null) {
+                throw new RuntimeException("Excel sheet is empty.");
+            }
+
+            conn.setAutoCommit(false);
+            try {
+                ensureTable(tableName, config.getColumns(), conn);
+                insertData(sheet, tableName, config.getColumns(), conn);
+                conn.commit();
+            } catch (Exception ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        }
+    }
+
+    // === Create table if not exists ===
+    private static void ensureTable(String tableName, List<ColumnConfig> columns, Connection conn) throws SQLException {
+        if (!tableExists(tableName, conn)) {
+            createTable(tableName, columns, conn);
+        }
+    }
+
+    private static boolean tableExists(String tableName, Connection conn) throws SQLException {
+        DatabaseMetaData metaData = conn.getMetaData();
+        try (ResultSet rs = metaData.getTables(null, null, tableName, new String[]{"TABLE"})) {
+            return rs.next();
+        }
+    }
+
+    private static void createTable(String tableName, List<ColumnConfig> columns, Connection conn) throws SQLException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("CREATE TABLE IF NOT EXISTS ").append(tableName).append(" (");
+
+        for (int i = 0; i < columns.size(); i++) {
+            ColumnConfig col = columns.get(i);
+            sb.append(col.getName()).append(" ").append(col.getType());
+            if (i < columns.size() - 1) {
+                sb.append(", ");
+            }
+        }
+        sb.append(")");
+
+        try (Statement stmt = conn.createStatement()) {
+            System.out.println("Executing: " + sb);
+            stmt.executeUpdate(sb.toString());
+        }
+    }
+
+    // === Insert data with correct types ===
+    private static void insertData(Sheet sheet, String tableName, List<ColumnConfig> columns, Connection conn) throws SQLException {
+        String insertSql = buildInsertSQL(tableName, columns);
+        System.out.println("Insert SQL: " + insertSql);
+
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            // assuming row 0 is header or can be ignored
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                boolean allEmpty = true;
+
+                for (int colIndex = 0; colIndex < columns.size(); colIndex++) {
+                    ColumnConfig colCfg = columns.get(colIndex);
+                    String baseType = getBaseType(colCfg.getType());
+
+                    Cell cell = row.getCell(colIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+
+                    // For type decision we want both: raw cell and string representation
+                    String strValue = cellToString(cell);
+                    int paramIndex = colIndex + 1;
+
+                    if ((strValue == null || strValue.isEmpty()) && !isDateLike(baseType) && cell == null) {
+                        // Empty cell → set NULL
+                        ps.setNull(paramIndex, sqlTypeForBaseType(baseType));
+                        continue;
+                    }
+
+                    // Type-based handling
+                    switch (baseType) {
+                        // Integer-like
+                        case "INT":
+                        case "INTEGER":
+                        case "SMALLINT":
+                        case "TINYINT": {
+                            if (strValue == null || strValue.isEmpty()) {
+                                ps.setNull(paramIndex, Types.INTEGER);
+                            } else {
+                                int v = Integer.parseInt(strValue);
+                                ps.setInt(paramIndex, v);
+                            }
+                            break;
+                        }
+
+                        case "BIGINT": {
+                            if (strValue == null || strValue.isEmpty()) {
+                                ps.setNull(paramIndex, Types.BIGINT);
+                            } else {
+                                long v = Long.parseLong(strValue);
+                                ps.setLong(paramIndex, v);
+                            }
+                            break;
+                        }
+
+                        // Floating-point / decimal
+                        case "FLOAT":
+                        case "REAL":
+                        case "DOUBLE":
+                        case "DECIMAL":
+                        case "NUMERIC": {
+                            if (strValue == null || strValue.isEmpty()) {
+                                ps.setNull(paramIndex, Types.DOUBLE);
+                            } else {
+                                double v = Double.parseDouble(strValue);
+                                ps.setDouble(paramIndex, v);
+                            }
+                            break;
+                        }
+
+                        // Boolean-like
+                        case "BIT":
+                        case "BOOLEAN": {
+                            if (strValue == null || strValue.isEmpty()) {
+                                ps.setNull(paramIndex, Types.BOOLEAN);
+                            } else {
+                                boolean v = parseBoolean(strValue);
+                                ps.setBoolean(paramIndex, v);
+                            }
+                            break;
+                        }
+
+                        // Date
+                        case "DATE": {
+                            java.sql.Date sqlDate = cellToSqlDate(cell, strValue);
+                            if (sqlDate == null) {
+                                ps.setNull(paramIndex, Types.DATE);
+                            } else {
+                                ps.setDate(paramIndex, sqlDate);
+                            }
+                            break;
+                        }
+
+                        // Date+Time
+                        case "DATETIME":
+                        case "TIMESTAMP": {
+                            java.sql.Timestamp ts = cellToSqlTimestamp(cell, strValue);
+                            if (ts == null) {
+                                ps.setNull(paramIndex, Types.TIMESTAMP);
+                            } else {
+                                ps.setTimestamp(paramIndex, ts);
+                            }
+                            break;
+                        }
+
+                        // Default: treat as text
+                        default: {
+                            if (strValue == null) {
+                                ps.setNull(paramIndex, Types.VARCHAR);
+                            } else {
+                                ps.setString(paramIndex, strValue);
+                            }
+                        }
+                    }
+
+                    if (strValue != null && !strValue.isEmpty()) {
+                        allEmpty = false;
+                    }
+                }
+
+                if (!allEmpty) {
+                    ps.addBatch();
+                }
+            }
+            ps.executeBatch();
+        }
+    }
+
+    private static String buildInsertSQL(String tableName, List<ColumnConfig> columns) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("INSERT INTO ").append(tableName).append(" (");
+
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append(columns.get(i).getName());
+            if (i < columns.size() - 1) sb.append(", ");
+        }
+
+        sb.append(") VALUES (");
+
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append("?");
+            if (i < columns.size() - 1) sb.append(", ");
+        }
+
+        sb.append(")");
+        return sb.toString();
+    }
+
+    // === Helpers ===
+
+    // Get base type name from something like "VARCHAR(50)", "INT", "DECIMAL(10,2)"
+    private static String getBaseType(String sqlType) {
+        String t = sqlType.toUpperCase(Locale.ROOT).trim();
+        int spaceIdx = t.indexOf(' ');
+        if (spaceIdx != -1) {
+            t = t.substring(0, spaceIdx);
+        }
+        int parenIdx = t.indexOf('(');
+        if (parenIdx != -1) {
+            t = t.substring(0, parenIdx);
+        }
+        return t;
+    }
+
+    private static int sqlTypeForBaseType(String baseType) {
+        switch (baseType) {
+            case "INT":
+            case "INTEGER":
+            case "SMALLINT":
+            case "TINYINT":
+                return Types.INTEGER;
+            case "BIGINT":
+                return Types.BIGINT;
+            case "FLOAT":
+            case "REAL":
+                return Types.FLOAT;
+            case "DOUBLE":
+                return Types.DOUBLE;
+            case "DECIMAL":
+            case "NUMERIC":
+                return Types.DECIMAL;
+            case "DATE":
+                return Types.DATE;
+            case "DATETIME":
+            case "TIMESTAMP":
+                return Types.TIMESTAMP;
+            case "BIT":
+            case "BOOLEAN":
+                return Types.BOOLEAN;
+            default:
+                return Types.VARCHAR;
+        }
+    }
+
+    private static boolean isDateLike(String baseType) {
+        return "DATE".equals(baseType) || "DATETIME".equals(baseType) || "TIMESTAMP".equals(baseType);
+    }
+
+    // Convert cell to String for non-date parsing
+    private static String cellToString(Cell cell) {
+        if (cell == null) return null;
+
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue().trim();
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    LocalDateTime ldt = cell.getLocalDateTimeCellValue();
+                    // Return ISO date string; for DATE types we will parse
+                    return ldt.toLocalDate().toString(); // yyyy-MM-dd
+                } else {
+                    double d = cell.getNumericCellValue();
+                    if (d == (long) d) {
+                        return String.valueOf((long) d);
+                    } else {
+                        return String.valueOf(d);
+                    }
+                }
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                try {
+                    return cell.getStringCellValue();
+                } catch (IllegalStateException e) {
+                    double d = cell.getNumericCellValue();
+                    if (d == (long) d) {
+                        return String.valueOf((long) d);
+                    } else {
+                        return String.valueOf(d);
+                    }
+                }
+            default:
+                return null;
+        }
+    }
+
+    private static java.sql.Date cellToSqlDate(Cell cell, String strValue) {
+        if (cell == null && (strValue == null || strValue.isEmpty())) {
+            return null;
+        }
+
+        try {
+            if (cell != null && cell.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+                java.util.Date d = cell.getDateCellValue();
+                return new java.sql.Date(d.getTime());
+            }
+        } catch (Exception ignored) {
+        }
+
+        if (strValue == null || strValue.isEmpty()) {
+            return null;
+        }
+
+        // Expecting "yyyy-MM-dd"
+        LocalDate ld = LocalDate.parse(strValue);
+        return java.sql.Date.valueOf(ld);
+    }
+
+    private static java.sql.Timestamp cellToSqlTimestamp(Cell cell, String strValue) {
+        if (cell == null && (strValue == null || strValue.isEmpty())) {
+            return null;
+        }
+
+        try {
+            if (cell != null && cell.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+                java.util.Date d = cell.getDateCellValue();
+                return new java.sql.Timestamp(d.getTime());
+            }
+        } catch (Exception ignored) {
+        }
+
+        if (strValue == null || strValue.isEmpty()) {
+            return null;
+        }
+
+        // If only date is present, treat as start of day
+        if (strValue.length() == 10) { // yyyy-MM-dd
+            LocalDate ld = LocalDate.parse(strValue);
+            return Timestamp.valueOf(ld.atStartOfDay());
+        }
+
+        // If full datetime "yyyy-MM-ddTHH:mm:ss" / "yyyy-MM-dd HH:mm:ss"
+        strValue = strValue.replace('T', ' ');
+        LocalDateTime ldt = LocalDateTime.parse(strValue.replace(' ', 'T'));
+        return Timestamp.valueOf(ldt);
+    }
+
+    private static boolean parseBoolean(String s) {
+        String v = s.trim().toLowerCase(Locale.ROOT);
+        return v.equals("true") || v.equals("1") || v.equals("y") || v.equals("yes");
+    }
+}
+
+
+---
+
+6. ExcelImportApp.java (console main)
+
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.sql.Connection;
+
+public class ExcelImportApp {
+
+    public static void main(String[] args) {
+        if (args.length < 2) {
+            System.out.println("Usage: java ExcelImportApp <config.json> <excel-file-path>");
+            return;
+        }
+
+        String jsonConfigPath = args[0];
+        String excelFilePath = args[1];
+
+        try (Connection conn = DBUtil.getConnection();
+             InputStream excelStream = new FileInputStream(excelFilePath)) {
+
+            TableConfig config = ConfigLoader.loadFromJson(jsonConfigPath);
+
+            ExcelToDBUtil.importExcelToTable(excelStream, config, conn);
+
+            System.out.println("✅ Data imported successfully into table: " + config.getTableName());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.out.println("❌ Error: " + e.getMessage());
+        }
+    }
+}
+
+
+---
+
+🔧 Reminder: JSON example
+
+{
+  "tableName": "STUDENT_MARKS",
+  "columns": [
+    { "name": "REG_NO", "type": "VARCHAR(20)" },
+    { "name": "NAME", "type": "VARCHAR(100)" },
+    { "name": "SEMESTER", "type": "INT" },
+    { "name": "SUBJECT", "type": "VARCHAR(100)" },
+    { "name": "MARK", "type": "INT" }
+  ]
+}
+
+Excel column 0 → REG_NO
+
+Excel column 1 → NAME
+
+Excel column 2 → SEMESTER (will use setInt)
+
+Excel column 3 → SUBJECT
+
+Excel column 4 → MARK (will use setInt)
+
+
+
+---
+
+If you send me your actual JSON config and a sample of your Excel columns, I can quickly verify and tweak the type mapping specifically for your table (for example, if you use DECIMAL(10,2) or DATETIME).
