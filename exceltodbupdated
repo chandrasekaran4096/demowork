@@ -1,0 +1,1025 @@
+1.Main.java
+
+package com.dataloader;
+
+import java.io.File;
+import java.util.List;
+import java.util.Map;
+
+public class Main {
+    
+    private static final String DEFAULT_PROPERTIES_PATH = "config.properties";
+    
+    public static void main(String[] args) {
+        System.out.println("=== Excel to MSSQL Data Loader ===\n");
+        
+        try {
+            // Validate arguments
+            if (args.length < 1) {
+                System.err.println("Usage: java -jar ExcelToMSSQL.jar <config.json> [config.properties]");
+                System.err.println("Example: java -jar ExcelToMSSQL.jar config.json config.properties");
+                System.err.println("Example: java -jar ExcelToMSSQL.jar config.json");
+                System.err.println("\nIf config.properties is not specified, default file 'config.properties' will be used.");
+                System.exit(1);
+            }
+            
+            String configJsonPath = args[0];
+            String configPropertiesPath = null;
+            
+            // Check if properties file provided as argument
+            if (args.length >= 2) {
+                configPropertiesPath = args[1];
+                System.out.println("Using properties file from argument: " + configPropertiesPath);
+            } else {
+                // Use default properties path
+                configPropertiesPath = DEFAULT_PROPERTIES_PATH;
+                System.out.println("No properties file specified, using default: " + DEFAULT_PROPERTIES_PATH);
+            }
+            
+            // Validate JSON config file exists
+            File configJsonFile = new File(configJsonPath);
+            if (!configJsonFile.exists()) {
+                System.err.println("ERROR: Configuration JSON file not found: " + configJsonPath);
+                System.exit(1);
+            }
+            
+            if (!configJsonPath.toLowerCase().endsWith(".json")) {
+                System.err.println("ERROR: Configuration file must be JSON format (.json)");
+                System.exit(1);
+            }
+            
+            // Validate properties file exists
+            File configPropertiesFile = new File(configPropertiesPath);
+            if (!configPropertiesFile.exists()) {
+                // If provided as argument and not found, error
+                if (args.length >= 2) {
+                    System.err.println("ERROR: Configuration properties file not found: " + configPropertiesPath);
+                    System.exit(1);
+                } else {
+                    // If default path not found, check current directory
+                    System.err.println("ERROR: Default properties file not found: " + configPropertiesPath);
+                    System.err.println("Please ensure 'config.properties' exists in the application directory.");
+                    System.exit(1);
+                }
+            }
+            
+            // Load configuration
+            System.out.println("Loading configuration from:");
+            System.out.println("  JSON: " + configJsonPath);
+            System.out.println("  Properties: " + configPropertiesPath);
+            ConfigManager config = new ConfigManager(configJsonPath, configPropertiesPath);
+            
+            // Display connection info
+            System.out.println("\nDatabase Connection:");
+            System.out.println("  Server: " + config.getServer() + ":" + config.getPort());
+            System.out.println("  Database: " + config.getDatabaseName());
+            System.out.println("  Username: " + config.getUsername());
+            
+            // Get table configurations
+            List<TableConfig> tableConfigs = config.getTableConfigs();
+            
+            if (tableConfigs.isEmpty()) {
+                System.out.println("WARNING: No table configurations found");
+                System.exit(0);
+            }
+            
+            System.out.println("\nFound " + tableConfigs.size() + " table(s) to process\n");
+            
+            // Initialize database manager
+            DatabaseManager dbManager = new DatabaseManager(config);
+            
+            // Process each table configuration
+            int successCount = 0;
+            int failCount = 0;
+            
+            for (int i = 0; i < tableConfigs.size(); i++) {
+                TableConfig tableConfig = tableConfigs.get(i);
+                
+                System.out.println("=====================================");
+                System.out.println("Processing Table " + (i + 1) + " of " + tableConfigs.size());
+                System.out.println("Table: " + tableConfig.getFullTableName());
+                System.out.println("Schema: " + tableConfig.getSchemaName());
+                System.out.println("Excel File: " + tableConfig.getExcelFilePath());
+                System.out.println("=====================================\n");
+                
+                try {
+                    // Validate Excel file exists
+                    File excelFile = new File(tableConfig.getExcelFilePath());
+                    if (!excelFile.exists()) {
+                        System.err.println("ERROR: Excel file not found: " + tableConfig.getExcelFilePath());
+                        System.err.println("Skipping this table...\n");
+                        failCount++;
+                        continue;
+                    }
+                    
+                    // Read Excel data
+                    System.out.println("Reading Excel file...");
+                    ExcelReader reader = new ExcelReader();
+                    List<Map<String, Object>> data = reader.readExcel(
+                        tableConfig.getExcelFilePath(),
+                        tableConfig.getSheetName(),
+                        tableConfig.getHeaderRowIndex(),
+                        tableConfig.getExcelColumnNames()
+                    );
+                    
+                    if (data.isEmpty()) {
+                        System.out.println("WARNING: No data found in Excel file");
+                        System.out.println("Skipping this table...\n");
+                        continue;
+                    }
+                    
+                    System.out.println("Found " + data.size() + " rows to process");
+                    
+                    // Insert data into database
+                    DataInserter inserter = new DataInserter(dbManager, config);
+                    inserter.insertData(data, tableConfig);
+                    
+                    successCount++;
+                    System.out.println("\nTable processed successfully!\n");
+                    
+                } catch (Exception e) {
+                    System.err.println("\nERROR processing table '" + tableConfig.getFullTableName() + "': " + e.getMessage());
+                    e.printStackTrace();
+                    failCount++;
+                    System.out.println("Continuing to next table...\n");
+                }
+            }
+            
+            // Final summary
+            System.out.println("=====================================");
+            System.out.println("=== Final Summary ===");
+            System.out.println("Total tables: " + tableConfigs.size());
+            System.out.println("Successfully processed: " + successCount);
+            System.out.println("Failed: " + failCount);
+            System.out.println("=====================================");
+            
+            // Close database connection
+            dbManager.close();
+            
+            System.out.println("\n=== Process completed ===");
+            
+        } catch (Exception e) {
+            System.err.println("\nFATAL ERROR: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
+
+
+
+2.DataInserter.java
+
+package com.dataloader;
+
+import java.sql.*;
+import java.util.List;
+import java.util.Map;
+
+public class DataInserter {
+    
+    private DatabaseManager dbManager;
+    private ConfigManager config;
+    
+    public DataInserter(DatabaseManager dbManager, ConfigManager config) {
+        this.dbManager = dbManager;
+        this.config = config;
+    }
+    
+    public void insertData(List<Map<String, Object>> data, TableConfig tableConfig) throws SQLException {
+        String tableName = tableConfig.getTableName();
+        String schemaName = tableConfig.getSchemaName();
+        String fullTableName = tableConfig.getFullTableName();
+        
+        // Check if table exists, create if necessary
+        if (!dbManager.tableExists(schemaName, tableName)) {
+            if (tableConfig.isCreateTableIfNotExists()) {
+                dbManager.createTable(schemaName, tableName, tableConfig.getColumns());
+            } else {
+                throw new SQLException("Table '" + fullTableName + "' does not exist and auto-creation is disabled");
+            }
+        } else {
+            System.out.println("Table '" + fullTableName + "' already exists");
+            
+            // Truncate if configured
+            if (tableConfig.isTruncateBeforeInsert()) {
+                dbManager.truncateTable(schemaName, tableName);
+            }
+        }
+        
+        // Build insert statement
+        List<String> dbColumnNames = tableConfig.getDatabaseColumnNames();
+        List<String> excelColumnNames = tableConfig.getExcelColumnNames();
+        
+        StringBuilder sql = new StringBuilder();
+        sql.append("INSERT INTO ").append(fullTableName).append(" (");
+        
+        for (int i = 0; i < dbColumnNames.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append("[").append(dbColumnNames.get(i)).append("]");
+        }
+        
+        sql.append(") VALUES (");
+        
+        for (int i = 0; i < dbColumnNames.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append("?");
+        }
+        
+        sql.append(")");
+        
+        // Insert data in batches
+        int batchSize = config.getBatchSize();
+        int totalRows = data.size();
+        int insertedRows = 0;
+        int failedRows = 0;
+        
+        Connection conn = dbManager.getConnection();
+        conn.setAutoCommit(false);
+        
+        try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+            
+            for (int i = 0; i < totalRows; i++) {
+                Map<String, Object> row = data.get(i);
+                
+                try {
+                    // Set parameters based on column configuration
+                    for (int j = 0; j < excelColumnNames.size(); j++) {
+                        String excelColName = excelColumnNames.get(j);
+                        ColumnConfig columnConfig = tableConfig.getColumns().get(j);
+                        
+                        Object value = row.get(excelColName);
+                        setParameter(pstmt, j + 1, value, columnConfig);
+                    }
+                    
+                    pstmt.addBatch();
+                    
+                    // Execute batch when batch size reached or at end
+                    if ((i + 1) % batchSize == 0 || i == totalRows - 1) {
+                        int[] results = pstmt.executeBatch();
+                        conn.commit();
+                        
+                        for (int result : results) {
+                            if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+                                insertedRows++;
+                            } else {
+                                failedRows++;
+                            }
+                        }
+                        
+                        System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+                    }
+                    
+                } catch (SQLException e) {
+                    failedRows++;
+                    System.err.println("Error inserting row " + (i + 1) + ": " + e.getMessage());
+                    
+                    // Try to continue with next batch
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackEx) {
+                        System.err.println("Rollback failed: " + rollbackEx.getMessage());
+                    }
+                }
+            }
+            
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
+        }
+        
+        System.out.println("\n=== Insert Summary for " + fullTableName + " ===");
+        System.out.println("Total rows: " + totalRows);
+        System.out.println("Successfully inserted: " + insertedRows);
+        System.out.println("Failed: " + failedRows);
+    }
+    
+    private void setParameter(PreparedStatement pstmt, int index, Object value, ColumnConfig columnConfig) throws SQLException {
+        String dataType = columnConfig.getDataType().toUpperCase();
+        
+        // Handle null values
+        if (value == null) {
+            int sqlType = getSqlType(dataType);
+            pstmt.setNull(index, sqlType);
+            return;
+        }
+        
+        try {
+            switch (dataType) {
+                case "INT":
+                case "INTEGER":
+                case "SMALLINT":
+                case "TINYINT":
+                    if (value instanceof Number) {
+                        pstmt.setInt(index, ((Number) value).intValue());
+                    } else {
+                        pstmt.setInt(index, Integer.parseInt(value.toString()));
+                    }
+                    break;
+                    
+                case "BIGINT":
+                    if (value instanceof Number) {
+                        pstmt.setLong(index, ((Number) value).longValue());
+                    } else {
+                        pstmt.setLong(index, Long.parseLong(value.toString()));
+                    }
+                    break;
+                    
+                case "DECIMAL":
+                case "NUMERIC":
+                case "MONEY":
+                case "SMALLMONEY":
+                    if (value instanceof Number) {
+                        pstmt.setBigDecimal(index, new java.math.BigDecimal(value.toString()));
+                    } else {
+                        pstmt.setBigDecimal(index, new java.math.BigDecimal(value.toString()));
+                    }
+                    break;
+                    
+                case "FLOAT":
+                case "REAL":
+                    if (value instanceof Number) {
+                        pstmt.setDouble(index, ((Number) value).doubleValue());
+                    } else {
+                        pstmt.setDouble(index, Double.parseDouble(value.toString()));
+                    }
+                    break;
+                    
+                case "BIT":
+                case "BOOLEAN":
+                    if (value instanceof Boolean) {
+                        pstmt.setBoolean(index, (Boolean) value);
+                    } else {
+                        String strValue = value.toString().toLowerCase();
+                        boolean boolValue = strValue.equals("true") || strValue.equals("1") || 
+                                          strValue.equals("yes") || strValue.equals("y");
+                        pstmt.setBoolean(index, boolValue);
+                    }
+                    break;
+                    
+                case "DATE":
+                    if (value instanceof java.util.Date) {
+                        pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+                    } else {
+                        pstmt.setDate(index, java.sql.Date.valueOf(value.toString()));
+                    }
+                    break;
+                    
+                case "DATETIME":
+                case "DATETIME2":
+                case "SMALLDATETIME":
+                    if (value instanceof java.util.Date) {
+                        pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+                    } else {
+                        pstmt.setTimestamp(index, Timestamp.valueOf(value.toString()));
+                    }
+                    break;
+                    
+                case "TIME":
+                    if (value instanceof java.util.Date) {
+                        pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+                    } else {
+                        pstmt.setTime(index, Time.valueOf(value.toString()));
+                    }
+                    break;
+                    
+                case "VARCHAR":
+                case "NVARCHAR":
+                case "CHAR":
+                case "NCHAR":
+                case "TEXT":
+                case "NTEXT":
+                default:
+                    pstmt.setString(index, value.toString());
+                    break;
+            }
+        } catch (Exception e) {
+            // If type conversion fails, try to insert as string
+            System.err.println("Warning: Type conversion failed for column " + columnConfig.getColumnName() + 
+                             ". Converting to string. Error: " + e.getMessage());
+            pstmt.setString(index, value.toString());
+        }
+    }
+    
+    private int getSqlType(String dataType) {
+        switch (dataType.toUpperCase()) {
+            case "INT":
+            case "INTEGER":
+                return Types.INTEGER;
+            case "BIGINT":
+                return Types.BIGINT;
+            case "SMALLINT":
+                return Types.SMALLINT;
+            case "TINYINT":
+                return Types.TINYINT;
+            case "DECIMAL":
+            case "NUMERIC":
+                return Types.DECIMAL;
+            case "FLOAT":
+            case "REAL":
+                return Types.FLOAT;
+            case "BIT":
+            case "BOOLEAN":
+                return Types.BIT;
+            case "DATE":
+                return Types.DATE;
+            case "DATETIME":
+            case "DATETIME2":
+            case "SMALLDATETIME":
+                return Types.TIMESTAMP;
+            case "TIME":
+                return Types.TIME;
+            case "VARCHAR":
+                return Types.VARCHAR;
+            case "NVARCHAR":
+            case "NCHAR":
+                return Types.NVARCHAR;
+            default:
+                return Types.NVARCHAR;
+        }
+    }
+}
+
+
+3.DatabaseManager.java
+
+package com.dataloader;
+
+import java.sql.*;
+import java.util.List;
+
+public class DatabaseManager {
+    
+    private ConfigManager config;
+    private Connection connection;
+    
+    public DatabaseManager(ConfigManager config) {
+        this.config = config;
+    }
+    
+    public Connection getConnection() throws SQLException {
+        if (connection == null || connection.isClosed()) {
+            ensureDatabaseExists();
+            connection = createConnection(config.getDatabaseName());
+        }
+        return connection;
+    }
+    
+    private void ensureDatabaseExists() throws SQLException {
+        if (!config.isCreateDatabaseIfNotExists()) {
+            return;
+        }
+        
+        // Connect to master database to check/create target database
+        try (Connection masterConn = createConnection("master")) {
+            String dbName = config.getDatabaseName();
+            
+            // Check if database exists
+            String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+            try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+                pstmt.setString(1, dbName);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (!rs.next()) {
+                        // Database doesn't exist, create it
+                        System.out.println("Database '" + dbName + "' does not exist. Creating...");
+                        String createDbQuery = "CREATE DATABASE [" + dbName + "]";
+                        try (Statement stmt = masterConn.createStatement()) {
+                            stmt.executeUpdate(createDbQuery);
+                        }
+                        System.out.println("Database created successfully");
+                    } else {
+                        System.out.println("Database '" + dbName + "' exists");
+                    }
+                }
+            }
+        }
+    }
+    
+    private Connection createConnection(String databaseName) throws SQLException {
+        String connectionUrl = String.format(
+            "jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true",
+            config.getServer(),
+            config.getPort(),
+            databaseName,
+            config.getUsername(),
+            config.getPassword()
+        );
+        
+        try {
+            Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        } catch (ClassNotFoundException e) {
+            throw new SQLException("MSSQL JDBC Driver not found. Ensure mssql-jdbc jar is in lib folder.", e);
+        }
+        
+        return DriverManager.getConnection(connectionUrl);
+    }
+    
+    public boolean schemaExists(String schemaName) throws SQLException {
+        String query = "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?";
+        
+        try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+            pstmt.setString(1, schemaName);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+    
+    public void createSchema(String schemaName) throws SQLException {
+        System.out.println("Creating schema: " + schemaName);
+        String sql = "CREATE SCHEMA [" + schemaName + "]";
+        
+        try (Statement stmt = getConnection().createStatement()) {
+            stmt.executeUpdate(sql);
+        }
+        
+        System.out.println("Schema created successfully");
+    }
+    
+    public boolean tableExists(String schemaName, String tableName) throws SQLException {
+        String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES " +
+                      "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+        
+        try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+            pstmt.setString(1, tableName);
+            pstmt.setString(2, schemaName);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+    
+    public void createTable(String schemaName, String tableName, List<ColumnConfig> columns) throws SQLException {
+        // Ensure schema exists
+        if (!schemaExists(schemaName)) {
+            createSchema(schemaName);
+        }
+        
+        System.out.println("Creating table: [" + schemaName + "].[" + tableName + "]");
+        
+        StringBuilder sql = new StringBuilder();
+        sql.append("CREATE TABLE [").append(schemaName).append("].[").append(tableName).append("] (");
+        sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+        
+        for (ColumnConfig column : columns) {
+            sql.append(", ").append(column.getSqlDefinition());
+        }
+        
+        sql.append(")");
+        
+        try (Statement stmt = getConnection().createStatement()) {
+            stmt.executeUpdate(sql.toString());
+        }
+        
+        System.out.println("Table created successfully with " + columns.size() + " columns");
+    }
+    
+    public void truncateTable(String schemaName, String tableName) throws SQLException {
+        System.out.println("Truncating table: [" + schemaName + "].[" + tableName + "]");
+        String sql = "TRUNCATE TABLE [" + schemaName + "].[" + tableName + "]";
+        
+        try (Statement stmt = getConnection().createStatement()) {
+            stmt.executeUpdate(sql);
+        }
+        
+        System.out.println("Table truncated successfully");
+    }
+    
+    public void close() {
+        try {
+            if (connection != null && !connection.isClosed()) {
+                connection.close();
+                System.out.println("Database connection closed");
+            }
+        } catch (SQLException e) {
+            System.err.println("Error closing connection: " + e.getMessage());
+        }
+    }
+}
+
+4.TableConfig.java
+
+package com.dataloader;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class TableConfig {
+    
+    private String tableName;
+    private String schemaName = "dbo"; // default schema
+    private String excelFilePath;
+    private String sheetName = "Sheet1"; // default
+    private int headerRowIndex = 0; // default
+    private boolean createTableIfNotExists = true; // default
+    private boolean truncateBeforeInsert = false; // default
+    private List<ColumnConfig> columns = new ArrayList<>();
+    
+    public String getTableName() {
+        return tableName;
+    }
+    
+    public void setTableName(String tableName) {
+        this.tableName = tableName;
+    }
+    
+    public String getSchemaName() {
+        return schemaName;
+    }
+    
+    public void setSchemaName(String schemaName) {
+        this.schemaName = schemaName;
+    }
+    
+    public String getFullTableName() {
+        return "[" + schemaName + "].[" + tableName + "]";
+    }
+    
+    public String getExcelFilePath() {
+        return excelFilePath;
+    }
+    
+    public void setExcelFilePath(String excelFilePath) {
+        this.excelFilePath = excelFilePath;
+    }
+    
+    public String getSheetName() {
+        return sheetName;
+    }
+    
+    public void setSheetName(String sheetName) {
+        this.sheetName = sheetName;
+    }
+    
+    public int getHeaderRowIndex() {
+        return headerRowIndex;
+    }
+    
+    public void setHeaderRowIndex(int headerRowIndex) {
+        this.headerRowIndex = headerRowIndex;
+    }
+    
+    public boolean isCreateTableIfNotExists() {
+        return createTableIfNotExists;
+    }
+    
+    public void setCreateTableIfNotExists(boolean createTableIfNotExists) {
+        this.createTableIfNotExists = createTableIfNotExists;
+    }
+    
+    public boolean isTruncateBeforeInsert() {
+        return truncateBeforeInsert;
+    }
+    
+    public void setTruncateBeforeInsert(boolean truncateBeforeInsert) {
+        this.truncateBeforeInsert = truncateBeforeInsert;
+    }
+    
+    public List<ColumnConfig> getColumns() {
+        return columns;
+    }
+    
+    public void setColumns(List<ColumnConfig> columns) {
+        this.columns = columns;
+    }
+    
+    public List<String> getExcelColumnNames() {
+        List<String> excelColumnNames = new ArrayList<>();
+        for (ColumnConfig column : columns) {
+            excelColumnNames.add(column.getExcelColumnName());
+        }
+        return excelColumnNames;
+    }
+    
+    public List<String> getDatabaseColumnNames() {
+        List<String> dbColumnNames = new ArrayList<>();
+        for (ColumnConfig column : columns) {
+            dbColumnNames.add(column.getColumnName());
+        }
+        return dbColumnNames;
+    }
+}
+
+5.ConfigManager.java
+
+package com.dataloader;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import java.io.FileInputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
+
+public class ConfigManager {
+    
+    private JsonObject config;
+    private Properties dbProperties;
+    
+    public ConfigManager(String configJsonPath, String configPropertiesPath) throws IOException {
+        // Load properties file
+        loadProperties(configPropertiesPath);
+        
+        // Load JSON config
+        Gson gson = new Gson();
+        try (FileReader reader = new FileReader(configJsonPath)) {
+            config = gson.fromJson(reader, JsonObject.class);
+        }
+        
+        validateConfig();
+    }
+    
+    private void loadProperties(String propertiesPath) throws IOException {
+        dbProperties = new Properties();
+        try (FileInputStream fis = new FileInputStream(propertiesPath)) {
+            dbProperties.load(fis);
+        }
+        
+        // Validate required properties
+        String[] required = {"database.server", "database.port", "database.name", 
+                           "database.username", "database.password"};
+        for (String prop : required) {
+            if (!dbProperties.containsKey(prop) || 
+                dbProperties.getProperty(prop).trim().isEmpty()) {
+                throw new RuntimeException("Missing or empty required property: " + prop);
+            }
+        }
+    }
+    
+    private void validateConfig() {
+        if (config == null) {
+            throw new RuntimeException("Configuration file is empty or invalid");
+        }
+        
+        if (!config.has("tables")) {
+            throw new RuntimeException("Missing 'tables' array in config");
+        }
+        
+        JsonArray tables = config.getAsJsonArray("tables");
+        if (tables.size() == 0) {
+            throw new RuntimeException("No tables defined in config");
+        }
+    }
+    
+    public String getServer() {
+        return dbProperties.getProperty("database.server");
+    }
+    
+    public int getPort() {
+        return Integer.parseInt(dbProperties.getProperty("database.port"));
+    }
+    
+    public String getDatabaseName() {
+        return dbProperties.getProperty("database.name");
+    }
+    
+    public String getUsername() {
+        return dbProperties.getProperty("database.username");
+    }
+    
+    public String getPassword() {
+        return dbProperties.getProperty("database.password");
+    }
+    
+    public boolean isCreateDatabaseIfNotExists() {
+        String value = dbProperties.getProperty("database.createIfNotExists", "true");
+        return Boolean.parseBoolean(value);
+    }
+    
+    public int getBatchSize() {
+        String value = dbProperties.getProperty("database.batchSize", "1000");
+        return Integer.parseInt(value);
+    }
+    
+    public List<TableConfig> getTableConfigs() {
+        List<TableConfig> tableConfigs = new ArrayList<>();
+        JsonArray tables = config.getAsJsonArray("tables");
+        
+        for (int i = 0; i < tables.size(); i++) {
+            JsonObject tableJson = tables.get(i).getAsJsonObject();
+            TableConfig tableConfig = new TableConfig();
+            
+            // Required fields
+            if (!tableJson.has("tableName") || !tableJson.has("excelFilePath") || !tableJson.has("columns")) {
+                throw new RuntimeException("Table config at index " + i + " missing required fields (tableName, excelFilePath, columns)");
+            }
+            
+            tableConfig.setTableName(tableJson.get("tableName").getAsString());
+            tableConfig.setExcelFilePath(tableJson.get("excelFilePath").getAsString());
+            
+            // Schema name - use provided or default to "dbo"
+            if (tableJson.has("schemaName") && !tableJson.get("schemaName").isJsonNull()) {
+                tableConfig.setSchemaName(tableJson.get("schemaName").getAsString());
+            } else {
+                tableConfig.setSchemaName("dbo"); // default schema
+            }
+            
+            // Optional fields
+            if (tableJson.has("sheetName")) {
+                tableConfig.setSheetName(tableJson.get("sheetName").getAsString());
+            }
+            
+            if (tableJson.has("headerRowIndex")) {
+                tableConfig.setHeaderRowIndex(tableJson.get("headerRowIndex").getAsInt());
+            }
+            
+            if (tableJson.has("createTableIfNotExists")) {
+                tableConfig.setCreateTableIfNotExists(tableJson.get("createTableIfNotExists").getAsBoolean());
+            }
+            
+            if (tableJson.has("truncateBeforeInsert")) {
+                tableConfig.setTruncateBeforeInsert(tableJson.get("truncateBeforeInsert").getAsBoolean());
+            }
+            
+            // Parse columns
+            JsonArray columnsJson = tableJson.getAsJsonArray("columns");
+            List<ColumnConfig> columns = new ArrayList<>();
+            
+            for (int j = 0; j < columnsJson.size(); j++) {
+                JsonObject colJson = columnsJson.get(j).getAsJsonObject();
+                ColumnConfig column = new ColumnConfig();
+                
+                if (!colJson.has("columnName") || !colJson.has("dataType") || !colJson.has("excelColumnName")) {
+                    throw new RuntimeException("Column at index " + j + " in table '" + tableConfig.getTableName() + "' missing required fields");
+                }
+                
+                column.setColumnName(colJson.get("columnName").getAsString());
+                column.setDataType(colJson.get("dataType").getAsString());
+                column.setExcelColumnName(colJson.get("excelColumnName").getAsString());
+                
+                if (colJson.has("isPrimaryKey")) {
+                    column.setPrimaryKey(colJson.get("isPrimaryKey").getAsBoolean());
+                }
+                
+                if (colJson.has("isNullable")) {
+                    column.setNullable(colJson.get("isNullable").getAsBoolean());
+                }
+                
+                if (colJson.has("maxLength")) {
+                    column.setMaxLength(colJson.get("maxLength").isJsonNull() ? null : colJson.get("maxLength").getAsInt());
+                }
+                
+                if (colJson.has("precision")) {
+                    column.setPrecision(colJson.get("precision").getAsInt());
+                }
+                
+                if (colJson.has("scale")) {
+                    column.setScale(colJson.get("scale").getAsInt());
+                }
+                
+                columns.add(column);
+            }
+            
+            tableConfig.setColumns(columns);
+            tableConfigs.add(tableConfig);
+        }
+        
+        return tableConfigs;
+    }
+}
+
+6.config.json
+
+{
+  "tables": [
+    {
+      "tableName": "Employees",
+      "schemaName": "dbo",
+      "excelFilePath": "employees.xlsx",
+      "sheetName": "Sheet1",
+      "headerRowIndex": 0,
+      "createTableIfNotExists": true,
+      "truncateBeforeInsert": false,
+      "columns": [
+        {
+          "columnName": "EmployeeID",
+          "dataType": "INT",
+          "excelColumnName": "Employee ID",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": null
+        },
+        {
+          "columnName": "FirstName",
+          "dataType": "NVARCHAR",
+          "excelColumnName": "First Name",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": 100
+        },
+        {
+          "columnName": "LastName",
+          "dataType": "NVARCHAR",
+          "excelColumnName": "Last Name",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": 100
+        },
+        {
+          "columnName": "Email",
+          "dataType": "NVARCHAR",
+          "excelColumnName": "Email",
+          "isPrimaryKey": false,
+          "isNullable": true,
+          "maxLength": 255
+        },
+        {
+          "columnName": "Department",
+          "dataType": "NVARCHAR",
+          "excelColumnName": "Department",
+          "isPrimaryKey": false,
+          "isNullable": true,
+          "maxLength": 100
+        },
+        {
+          "columnName": "Salary",
+          "dataType": "DECIMAL",
+          "excelColumnName": "Salary",
+          "isPrimaryKey": false,
+          "isNullable": true,
+          "maxLength": null,
+          "precision": 18,
+          "scale": 2
+        },
+        {
+          "columnName": "HireDate",
+          "dataType": "DATE",
+          "excelColumnName": "Hire Date",
+          "isPrimaryKey": false,
+          "isNullable": true,
+          "maxLength": null
+        },
+        {
+          "columnName": "IsActive",
+          "dataType": "BIT",
+          "excelColumnName": "Active",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": null
+        }
+      ]
+    },
+    {
+      "tableName": "Products",
+      "schemaName": "sales",
+      "excelFilePath": "products.xlsx",
+      "sheetName": "Products",
+      "headerRowIndex": 0,
+      "createTableIfNotExists": true,
+      "truncateBeforeInsert": false,
+      "columns": [
+        {
+          "columnName": "ProductID",
+          "dataType": "INT",
+          "excelColumnName": "Product ID",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": null
+        },
+        {
+          "columnName": "ProductName",
+          "dataType": "NVARCHAR",
+          "excelColumnName": "Product Name",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": 200
+        },
+        {
+          "columnName": "Price",
+          "dataType": "DECIMAL",
+          "excelColumnName": "Price",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": null,
+          "precision": 10,
+          "scale": 2
+        },
+        {
+          "columnName": "Stock",
+          "dataType": "INT",
+          "excelColumnName": "Stock Quantity",
+          "isPrimaryKey": false,
+          "isNullable": false,
+          "maxLength": null
+        }
+      ]
+    }
+  ]
+}
+
+7.config.property
+# Database Configuration
+database.server=localhost
+database.port=1433
+database.name=MyDatabase
+database.username=sa
+database.password=YourPassword123
+
+# Database Options
+database.createIfNotExists=true
+database.batchSize=1000
