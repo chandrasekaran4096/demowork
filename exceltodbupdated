@@ -1220,3 +1220,56 @@ public class Main {
         return null;
     }
 }
+
+
+
+java -jar ExcelToMSSQL.jar C:\projects\data\config.json
+```
+It will look for properties file in:
+1. `C:\projects\data\config.properties` (same folder as JSON)
+2. `config.properties` (current working directory)
+
+## Examples:
+
+### Example 1: All files in same directory
+```
+C:\myapp\
+  ├── ExcelToMSSQL.jar
+  ├── config.json
+  ├── config.properties
+  └── employees.xlsx
+
+Command: java -jar ExcelToMSSQL.jar config.json
+Result: ✅ Finds config.properties automatically
+```
+
+### Example 2: JSON in subdirectory
+```
+C:\myapp\
+  ├── ExcelToMSSQL.jar
+  └── configs\
+      ├── config.json
+      └── config.properties
+
+Command: java -jar ExcelToMSSQL.jar configs\config.json
+Result: ✅ Finds configs\config.properties automatically
+```
+
+### Example 3: Properties in different location
+```
+C:\myapp\
+  ├── ExcelToMSSQL.jar
+  ├── configs\
+  │   └── config.json
+  └── credentials\
+      └── database.properties
+
+Command: java -jar ExcelToMSSQL.jar configs\config.json credentials\database.properties
+Result: ✅ Uses the explicit path you provided
+```
+
+### Example 4: Running from any directory
+```
+Current directory: C:\anywhere\
+Command: java -jar C:\tools\ExcelToMSSQL.jar C:\data\config.json
+Result: ✅ Looks for C:\data\config.properties first, then C:\anywhere\config.properties
