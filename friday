@@ -166,3 +166,182 @@ public class Main {
         System.err.println("  - config.properties (in application directory or specified path)");
     }
 }
+
+
+package com.dataloader;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import java.io.FileInputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
+import java.util.Set;
+
+public class ConfigManager {
+    
+    private JsonObject config;
+    private Properties dbProperties;
+    
+    public ConfigManager(String configJsonPath, String configPropertiesPath) throws IOException {
+        // Load properties file
+        loadProperties(configPropertiesPath);
+        
+        // Load JSON config
+        Gson gson = new Gson();
+        try (FileReader reader = new FileReader(configJsonPath)) {
+            config = gson.fromJson(reader, JsonObject.class);
+        }
+        
+        validateConfig();
+    }
+    
+    private void loadProperties(String propertiesPath) throws IOException {
+        dbProperties = new Properties();
+        try (FileInputStream fis = new FileInputStream(propertiesPath)) {
+            dbProperties.load(fis);
+        }
+        
+        // Validate required properties
+        String[] required = {"database.server", "database.port", "database.name", 
+                           "database.username", "database.password"};
+        for (String prop : required) {
+            if (!dbProperties.containsKey(prop) || 
+                dbProperties.getProperty(prop).trim().isEmpty()) {
+                throw new RuntimeException("Missing or empty required property: " + prop);
+            }
+        }
+    }
+    
+    private void validateConfig() {
+        if (config == null) {
+            throw new RuntimeException("Configuration file is empty or invalid");
+        }
+        
+        if (config.size() == 0) {
+            throw new RuntimeException("No table configurations defined in config");
+        }
+    }
+    
+    public String getServer() {
+        return dbProperties.getProperty("database.server");
+    }
+    
+    public int getPort() {
+        return Integer.parseInt(dbProperties.getProperty("database.port"));
+    }
+    
+    public String getDatabaseName() {
+        return dbProperties.getProperty("database.name");
+    }
+    
+    public String getUsername() {
+        return dbProperties.getProperty("database.username");
+    }
+    
+    public String getPassword() {
+        return dbProperties.getProperty("database.password");
+    }
+    
+    public boolean isCreateDatabaseIfNotExists() {
+        String value = dbProperties.getProperty("database.createIfNotExists", "true");
+        return Boolean.parseBoolean(value);
+    }
+    
+    public int getBatchSize() {
+        String value = dbProperties.getProperty("database.batchSize", "1000");
+        return Integer.parseInt(value);
+    }
+    
+    public Set<String> getAvailableKeys() {
+        return config.keySet();
+    }
+    
+    public TableConfig getTableConfigByKey(String key) {
+        if (!config.has(key)) {
+            return null;
+        }
+        
+        JsonObject tableJson = config.getAsJsonObject(key);
+        TableConfig tableConfig = new TableConfig();
+        
+        // Required fields
+        if (!tableJson.has("tableName") || !tableJson.has("excelFilePath") || !tableJson.has("columns")) {
+            throw new RuntimeException("Table config '" + key + "' missing required fields (tableName, excelFilePath, columns)");
+        }
+        
+        tableConfig.setTableName(tableJson.get("tableName").getAsString());
+        tableConfig.setExcelFilePath(tableJson.get("excelFilePath").getAsString());
+        
+        // Schema name (using objectName from JSON, default to "dbo")
+        if (tableJson.has("objectName") && !tableJson.get("objectName").isJsonNull()) {
+            tableConfig.setSchemaName(tableJson.get("objectName").getAsString());
+        } else if (tableJson.has("schemaName") && !tableJson.get("schemaName").isJsonNull()) {
+            tableConfig.setSchemaName(tableJson.get("schemaName").getAsString());
+        } else {
+            tableConfig.setSchemaName("dbo"); // default schema
+        }
+        
+        // Optional fields
+        if (tableJson.has("sheetName")) {
+            tableConfig.setSheetName(tableJson.get("sheetName").getAsString());
+        }
+        
+        if (tableJson.has("headerRowIndex")) {
+            tableConfig.setHeaderRowIndex(tableJson.get("headerRowIndex").getAsInt());
+        }
+        
+        if (tableJson.has("createTableIfNotExists")) {
+            tableConfig.setCreateTableIfNotExists(tableJson.get("createTableIfNotExists").getAsBoolean());
+        }
+        
+        if (tableJson.has("truncateBeforeInsert")) {
+            tableConfig.setTruncateBeforeInsert(tableJson.get("truncateBeforeInsert").getAsBoolean());
+        }
+        
+        // Parse columns
+        JsonArray columnsJson = tableJson.getAsJsonArray("columns");
+        List<ColumnConfig> columns = new ArrayList<>();
+        
+        for (int j = 0; j < columnsJson.size(); j++) {
+            JsonObject colJson = columnsJson.get(j).getAsJsonObject();
+            ColumnConfig column = new ColumnConfig();
+            
+            if (!colJson.has("columnName") || !colJson.has("dataType") || !colJson.has("excelColumnLetter")) {
+                throw new RuntimeException("Column at index " + j + " in table '" + tableConfig.getTableName() + "' missing required fields");
+            }
+            
+            column.setColumnName(colJson.get("columnName").getAsString());
+            column.setDataType(colJson.get("dataType").getAsString());
+            column.setExcelColumnLetter(colJson.get("excelColumnLetter").getAsString());
+            
+            if (colJson.has("isPrimaryKey")) {
+                column.setPrimaryKey(colJson.get("isPrimaryKey").getAsBoolean());
+            }
+            
+            if (colJson.has("isNullable")) {
+                column.setNullable(colJson.get("isNullable").getAsBoolean());
+            }
+            
+            if (colJson.has("maxLength")) {
+                column.setMaxLength(colJson.get("maxLength").isJsonNull() ? null : colJson.get("maxLength").getAsInt());
+            }
+            
+            if (colJson.has("precision")) {
+                column.setPrecision(colJson.get("precision").getAsInt());
+            }
+            
+            if (colJson.has("scale")) {
+                column.setScale(colJson.get("scale").getAsInt());
+            }
+            
+            columns.add(column);
+        }
+        
+        tableConfig.setColumns(columns);
+        return tableConfig;
+    }
+}
