@@ -1,0 +1,168 @@
+package com.dataloader;
+
+import java.io.File;
+import java.util.Map;
+
+public class Main {
+    
+    private static final String DEFAULT_PROPERTIES_FILENAME = "config.properties";
+    private static final String DEFAULT_JSON_FILENAME = "table-config.json";
+    
+    public static void main(String[] args) {
+        System.out.println("=== Excel to MSSQL Data Loader ===\n");
+        
+        try {
+            // Validate arguments
+            if (args.length < 1) {
+                printUsage();
+                System.exit(1);
+            }
+            
+            String tableKey = args[0];
+            String configPropertiesPath = null;
+            
+            System.out.println("Processing table key: " + tableKey + "\n");
+            
+            // Determine properties file path
+            if (args.length >= 2) {
+                configPropertiesPath = args[1];
+                System.out.println("Using properties file from argument: " + configPropertiesPath);
+                
+                File configPropertiesFile = new File(configPropertiesPath);
+                if (!configPropertiesFile.exists()) {
+                    System.err.println("ERROR: Configuration properties file not found: " + configPropertiesPath);
+                    System.exit(1);
+                }
+            } else {
+                configPropertiesPath = findPropertiesFile();
+                if (configPropertiesPath == null) {
+                    System.err.println("ERROR: Configuration properties file not found.");
+                    System.err.println("Searched location: " + new File(DEFAULT_PROPERTIES_FILENAME).getAbsolutePath());
+                    System.err.println("\nPlease either:");
+                    System.err.println("  - Place 'config.properties' in the application directory, or");
+                    System.err.println("  - Specify the properties file path: java -jar ExcelToMSSQL.jar <tableKey> <config.properties>");
+                    System.exit(1);
+                }
+                System.out.println("Found properties file: " + configPropertiesPath);
+            }
+            
+            // Load embedded JSON configuration
+            String configJsonPath = findJsonConfig();
+            if (configJsonPath == null) {
+                System.err.println("ERROR: table-config.json not found in application directory");
+                System.err.println("Expected location: " + new File(DEFAULT_JSON_FILENAME).getAbsolutePath());
+                System.exit(1);
+            }
+            
+            // Load configuration
+            System.out.println("Loading configuration from:");
+            System.out.println("  JSON: " + configJsonPath);
+            System.out.println("  Properties: " + configPropertiesPath);
+            ConfigManager config = new ConfigManager(configJsonPath, configPropertiesPath);
+            
+            // Display connection info
+            System.out.println("\nDatabase Connection:");
+            System.out.println("  Server: " + config.getServer() + ":" + config.getPort());
+            System.out.println("  Database: " + config.getDatabaseName());
+            System.out.println("  Username: " + config.getUsername());
+            
+            // Get specific table configuration by key
+            TableConfig tableConfig = config.getTableConfigByKey(tableKey);
+            
+            if (tableConfig == null) {
+                System.err.println("\nERROR: Table key '" + tableKey + "' not found in configuration");
+                System.err.println("Available keys: " + config.getAvailableKeys());
+                System.exit(1);
+            }
+            
+            System.out.println("\n=====================================");
+            System.out.println("Processing Table: " + tableConfig.getFullTableName());
+            System.out.println("Schema: " + tableConfig.getSchemaName());
+            System.out.println("Excel File: " + tableConfig.getExcelFilePath());
+            System.out.println("=====================================\n");
+            
+            // Initialize handlers
+            DatabaseHandler dbHandler = new DatabaseHandler(config);
+            ExcelHandler excelHandler = new ExcelHandler();
+            
+            try {
+                // Validate Excel file
+                File excelFile = new File(tableConfig.getExcelFilePath());
+                if (!excelFile.exists()) {
+                    System.err.println("ERROR: Excel file not found: " + tableConfig.getExcelFilePath());
+                    System.exit(1);
+                }
+                
+                // Read Excel data
+                System.out.println("Reading Excel file...");
+                java.util.List<Map<String, Object>> data = excelHandler.readExcel(
+                    tableConfig.getExcelFilePath(),
+                    tableConfig.getSheetName(),
+                    tableConfig.getHeaderRowIndex(),
+                    tableConfig.getColumnLetters()
+                );
+                
+                if (data.isEmpty()) {
+                    System.out.println("WARNING: No data found in Excel file");
+                    System.exit(0);
+                }
+                
+                System.out.println("Found " + data.size() + " rows to process");
+                
+                // Insert data into database
+                dbHandler.insertData(data, tableConfig);
+                
+                System.out.println("\n=====================================");
+                System.out.println("=== Process Completed Successfully ===");
+                System.out.println("Table: " + tableConfig.getFullTableName());
+                System.out.println("Rows processed: " + data.size());
+                System.out.println("=====================================");
+                
+            } catch (Exception e) {
+                System.err.println("\nERROR processing table '" + tableConfig.getFullTableName() + "': " + e.getMessage());
+                e.printStackTrace();
+                System.exit(1);
+            } finally {
+                // Cleanup
+                dbHandler.close();
+            }
+            
+            System.out.println("\n=== Process completed ===");
+            
+        } catch (Exception e) {
+            System.err.println("\nFATAL ERROR: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+    
+    private static String findPropertiesFile() {
+        File currentDir = new File(DEFAULT_PROPERTIES_FILENAME);
+        if (currentDir.exists()) {
+            return currentDir.getAbsolutePath();
+        }
+        return null;
+    }
+    
+    private static String findJsonConfig() {
+        File jsonFile = new File(DEFAULT_JSON_FILENAME);
+        if (jsonFile.exists()) {
+            return jsonFile.getAbsolutePath();
+        }
+        return null;
+    }
+    
+    private static void printUsage() {
+        System.err.println("Usage: java -jar ExcelToMSSQL.jar <tableKey> [config.properties]");
+        System.err.println("\nExamples:");
+        System.err.println("  java -jar ExcelToMSSQL.jar EmpData");
+        System.err.println("  java -jar ExcelToMSSQL.jar ProdInventory");
+        System.err.println("  java -jar ExcelToMSSQL.jar EmpData config.properties");
+        System.err.println("\nDescription:");
+        System.err.println("  tableKey          - The key from table-config.json (e.g., EmpData, ProdInventory)");
+        System.err.println("  config.properties - Optional path to properties file (default: config.properties)");
+        System.err.println("\nRequired Files:");
+        System.err.println("  - table-config.json (in application directory)");
+        System.err.println("  - config.properties (in application directory or specified path)");
+    }
+}
