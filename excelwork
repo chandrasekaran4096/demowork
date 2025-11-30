@@ -1,0 +1,1512 @@
+Main.java
+
+package com.dataloader;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+
+public class Main {
+    
+    private static final String CONFIG_FILE = "config.json";
+    private static final String DB_PROPERTIES_FILE = "database.properties";
+    
+    public static void main(String[] args) {
+        System.out.println("=== Excel to MSSQL Data Loader ===\n");
+        
+        try {
+            // Validate arguments
+            if (args.length < 1) {
+                System.err.println("Usage: java -jar ExcelToMSSQL.jar <table-key>");
+                System.err.println("Example: java -jar ExcelToMSSQL.jar EmpData");
+                System.exit(1);
+            }
+            
+            String tableKey = args[0];
+            
+            // Load database properties
+            File dbPropertiesFile = new File(DB_PROPERTIES_FILE);
+            if (!dbPropertiesFile.exists()) {
+                System.err.println("ERROR: Database properties file not found: " + DB_PROPERTIES_FILE);
+                System.err.println("Make sure database.properties is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading database configuration from: " + dbPropertiesFile.getAbsolutePath());
+            Properties dbProperties = new Properties();
+            try (FileInputStream fis = new FileInputStream(dbPropertiesFile)) {
+                dbProperties.load(fis);
+            }
+            
+            // Validate required database properties
+            String[] requiredProps = {"server", "port", "databaseName", "username", "password"};
+            for (String prop : requiredProps) {
+                if (!dbProperties.containsKey(prop) || dbProperties.getProperty(prop).trim().isEmpty()) {
+                    System.err.println("ERROR: Missing or empty required property: " + prop);
+                    System.exit(1);
+                }
+            }
+            
+            // Load table configuration
+            File configFile = new File(CONFIG_FILE);
+            if (!configFile.exists()) {
+                System.err.println("ERROR: Configuration file not found: " + CONFIG_FILE);
+                System.err.println("Make sure config.json is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading table configuration from: " + configFile.getAbsolutePath());
+            
+            // Parse JSON config
+            Gson gson = new Gson();
+            JsonObject config;
+            try (FileReader reader = new FileReader(configFile)) {
+                config = gson.fromJson(reader, JsonObject.class);
+            }
+            
+            // Check if table key exists
+            if (!config.has(tableKey)) {
+                System.err.println("ERROR: Table key '" + tableKey + "' not found in config");
+                System.err.println("Available keys: " + config.keySet());
+                System.exit(1);
+            }
+            
+            JsonObject tableConfig = config.getAsJsonObject(tableKey);
+            
+            System.out.println("Processing table key: " + tableKey);
+            System.out.println("Table: " + tableConfig.get("tableName").getAsString());
+            System.out.println("=====================================\n");
+            
+            // Initialize database connection
+            DatabaseHelper dbHelper = new DatabaseHelper(dbProperties);
+            
+            // Check if database exists
+            if (!dbHelper.checkDatabaseExists()) {
+                System.err.println("ERROR: Database '" + dbHelper.getDatabaseName() + "' does not exist");
+                System.err.println("Please create the database first");
+                dbHelper.close();
+                System.exit(1);
+            }
+            
+            // Process the table
+            ExcelProcessor processor = new ExcelProcessor(dbHelper, tableConfig);
+            processor.process();
+            
+            // Close connection
+            dbHelper.close();
+            
+            System.out.println("\n=== Process completed successfully ===");
+            
+        } catch (Exception e) {
+            System.err.println("\nFATAL ERROR: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
+
+
+2.databasehelper.java
+
+package com.dataloader;
+
+import java.sql.*;
+import java.util.List;
+import java.util.Properties;
+
+public class DatabaseHelper {
+    
+    private Properties dbProperties;
+    private Connection connection;
+    private String server;
+    private int port;
+    private String databaseName;
+    private String username;
+    private String password;
+    private int batchSize;
+    
+    public DatabaseHelper(Properties dbProperties) throws SQLException {
+        this.dbProperties = dbProperties;
+        this.server = dbProperties.getProperty("server");
+        this.port = Integer.parseInt(dbProperties.getProperty("port"));
+        this.databaseName = dbProperties.getProperty("databaseName");
+        this.username = dbProperties.getProperty("username");
+        this.password = dbProperties.getProperty("password");
+        this.batchSize = dbProperties.containsKey("batchSize") 
+            ? Integer.parseInt(dbProperties.getProperty("batchSize")) 
+            : 1000;
+        
+        // Load JDBC driver
+        try {
+            Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        } catch (ClassNotFoundException e) {
+            throw new SQLException("MSSQL JDBC Driver not found", e);
+        }
+    }
+    
+    public boolean checkDatabaseExists() {
+        try (Connection masterConn = createConnection("master")) {
+            String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+            try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+                pstmt.setString(1, databaseName);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    boolean exists = rs.next();
+                    if (exists) {
+                        System.out.println("Database '" + databaseName + "' exists");
+                    }
+                    return exists;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error checking database: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    public Connection getConnection() throws SQLException {
+        if (connection == null || connection.isClosed()) {
+            connection = createConnection(databaseName);
+        }
+        return connection;
+    }
+    
+    private Connection createConnection(String dbName) throws SQLException {
+        String connectionUrl = String.format(
+            "jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true",
+            server, port, dbName, username, password
+        );
+        return DriverManager.getConnection(connectionUrl);
+    }
+    
+    public boolean tableExists(String tableName, String objectName) throws SQLException {
+        String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+        String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES " +
+                      "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+        
+        try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+            pstmt.setString(1, tableName);
+            pstmt.setString(2, schema);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+    
+    public void createTable(String tableName, String objectName, List<ColumnInfo> columns) throws SQLException {
+        String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+        System.out.println("Creating table: " + schema + "." + tableName);
+        
+        StringBuilder sql = new StringBuilder();
+        sql.append("CREATE TABLE [").append(schema).append("].[").append(tableName).append("] (");
+        sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+        
+        for (ColumnInfo col : columns) {
+            sql.append(", ").append(col.getSqlDefinition());
+        }
+        
+        sql.append(")");
+        
+        try (Statement stmt = getConnection().createStatement()) {
+            stmt.executeUpdate(sql.toString());
+        }
+        
+        System.out.println("Table created successfully with " + columns.size() + " columns");
+    }
+    
+    public void truncateTable(String tableName, String objectName) throws SQLException {
+        String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+        System.out.println("Truncating table: " + schema + "." + tableName);
+        String sql = "TRUNCATE TABLE [" + schema + "].[" + tableName + "]";
+        
+        try (Statement stmt = getConnection().createStatement()) {
+            stmt.executeUpdate(sql);
+        }
+        
+        System.out.println("Table truncated successfully");
+    }
+    
+    public int getBatchSize() {
+        return batchSize;
+    }
+    
+    public String getDatabaseName() {
+        return databaseName;
+    }
+    
+    public void close() {
+        try {
+            if (connection != null && !connection.isClosed()) {
+                connection.close();
+                System.out.println("Database connection closed");
+            }
+        } catch (SQLException e) {
+            System.err.println("Error closing connection: " + e.getMessage());
+        }
+    }
+    
+    // Inner class for column information
+    public static class ColumnInfo {
+        private String columnName;
+        private String dataType;
+        private String excelColumnLetter;
+        private boolean isPrimaryKey;
+        private boolean isNullable;
+        private Integer maxLength;
+        private Integer precision;
+        private Integer scale;
+        
+        public ColumnInfo(com.google.gson.JsonObject colJson) {
+            this.columnName = colJson.get("columnName").getAsString();
+            this.dataType = colJson.get("dataType").getAsString().toUpperCase();
+            this.excelColumnLetter = colJson.get("excelColumnLetter").getAsString();
+            this.isPrimaryKey = colJson.has("isPrimaryKey") && colJson.get("isPrimaryKey").getAsBoolean();
+            this.isNullable = !colJson.has("isNullable") || colJson.get("isNullable").getAsBoolean();
+            this.maxLength = colJson.has("maxLength") && !colJson.get("maxLength").isJsonNull() 
+                ? colJson.get("maxLength").getAsInt() : null;
+            this.precision = colJson.has("precision") ? colJson.get("precision").getAsInt() : null;
+            this.scale = colJson.has("scale") ? colJson.get("scale").getAsInt() : null;
+        }
+        
+        public String getColumnName() { return columnName; }
+        public String getDataType() { return dataType; }
+        public String getExcelColumnLetter() { return excelColumnLetter; }
+        public boolean isNullable() { return isNullable; }
+        
+        public String getSqlDefinition() {
+            StringBuilder sql = new StringBuilder();
+            sql.append("[").append(columnName).append("] ");
+            
+            switch (dataType) {
+                case "NVARCHAR":
+                case "VARCHAR":
+                case "CHAR":
+                case "NCHAR":
+                    sql.append(dataType);
+                    if (maxLength != null) {
+                        sql.append("(").append(maxLength).append(")");
+                    } else {
+                        sql.append("(MAX)");
+                    }
+                    break;
+                    
+                case "DECIMAL":
+                case "NUMERIC":
+                    sql.append(dataType);
+                    if (precision != null) {
+                        sql.append("(").append(precision);
+                        if (scale != null) {
+                            sql.append(",").append(scale);
+                        }
+                        sql.append(")");
+                    } else {
+                        sql.append("(18,2)");
+                    }
+                    break;
+                    
+                default:
+                    sql.append(dataType);
+                    break;
+            }
+            
+            if (!isNullable) {
+                sql.append(" NOT NULL");
+            }
+            
+            if (isPrimaryKey) {
+                sql.append(" PRIMARY KEY");
+            }
+            
+            return sql.toString();
+        }
+        
+        public void setParameter(PreparedStatement pstmt, int index, Object value) throws SQLException {
+            if (value == null) {
+                pstmt.setNull(index, getSqlType());
+                return;
+            }
+            
+            try {
+                switch (dataType) {
+                    case "INT":
+                    case "INTEGER":
+                    case "SMALLINT":
+                    case "TINYINT":
+                        if (value instanceof Number) {
+                            pstmt.setInt(index, ((Number) value).intValue());
+                        } else {
+                            pstmt.setInt(index, Integer.parseInt(value.toString()));
+                        }
+                        break;
+                        
+                    case "BIGINT":
+                        if (value instanceof Number) {
+                            pstmt.setLong(index, ((Number) value).longValue());
+                        } else {
+                            pstmt.setLong(index, Long.parseLong(value.toString()));
+                        }
+                        break;
+                        
+                    case "DECIMAL":
+                    case "NUMERIC":
+                    case "MONEY":
+                    case "SMALLMONEY":
+                        pstmt.setBigDecimal(index, new java.math.BigDecimal(value.toString()));
+                        break;
+                        
+                    case "FLOAT":
+                    case "REAL":
+                        if (value instanceof Number) {
+                            pstmt.setDouble(index, ((Number) value).doubleValue());
+                        } else {
+                            pstmt.setDouble(index, Double.parseDouble(value.toString()));
+                        }
+                        break;
+                        
+                    case "BIT":
+                    case "BOOLEAN":
+                        if (value instanceof Boolean) {
+                            pstmt.setBoolean(index, (Boolean) value);
+                        } else {
+                            String strValue = value.toString().toLowerCase();
+                            boolean boolValue = strValue.equals("true") || strValue.equals("1") || 
+                                              strValue.equals("yes") || strValue.equals("y");
+                            pstmt.setBoolean(index, boolValue);
+                        }
+                        break;
+                        
+                    case "DATE":
+                        if (value instanceof java.util.Date) {
+                            pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+                        } else {
+                            pstmt.setDate(index, java.sql.Date.valueOf(value.toString()));
+                        }
+                        break;
+                        
+                    case "DATETIME":
+                    case "DATETIME2":
+                    case "SMALLDATETIME":
+                        if (value instanceof java.util.Date) {
+                            pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+                        } else {
+                            pstmt.setTimestamp(index, Timestamp.valueOf(value.toString()));
+                        }
+                        break;
+                        
+                    case "TIME":
+                        if (value instanceof java.util.Date) {
+                            pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+                        } else {
+                            pstmt.setTime(index, Time.valueOf(value.toString()));
+                        }
+                        break;
+                        
+                    default:
+                        pstmt.setString(index, value.toString());
+                        break;
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Type conversion failed for " + columnName + ". Using string. Error: " + e.getMessage());
+                pstmt.setString(index, value.toString());
+            }
+        }
+        
+        private int getSqlType() {
+            switch (dataType) {
+                case "INT":
+                case "INTEGER":
+                    return Types.INTEGER;
+                case "BIGINT":
+                    return Types.BIGINT;
+                case "SMALLINT":
+                    return Types.SMALLINT;
+                case "TINYINT":
+                    return Types.TINYINT;
+                case "DECIMAL":
+                case "NUMERIC":
+                    return Types.DECIMAL;
+                case "FLOAT":
+                case "REAL":
+                    return Types.FLOAT;
+                case "BIT":
+                case "BOOLEAN":
+                    return Types.BIT;
+                case "DATE":
+                    return Types.DATE;
+                case "DATETIME":
+                case "DATETIME2":
+                case "SMALLDATETIME":
+                    return Types.TIMESTAMP;
+                case "TIME":
+                    return Types.TIME;
+                case "NVARCHAR":
+                case "NCHAR":
+                    return Types.NVARCHAR;
+                default:
+                    return Types.VARCHAR;
+            }
+        }
+    }
+}
+
+
+3.excelprocessor.java
+
+package com.dataloader;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
+
+public class ExcelProcessor {
+    
+    private DatabaseHelper dbHelper;
+    private JsonObject tableConfig;
+    private String tableName;
+    private String objectName;
+    private String excelFilePath;
+    private String sheetName;
+    private int headerRowIndex;
+    private boolean createTableIfNotExists;
+    private boolean truncateBeforeInsert;
+    private String insertMode;
+    private List<String> uniqueKeys;
+    private String updateStrategy;
+    private List<DatabaseHelper.ColumnInfo> columns;
+    
+    public ExcelProcessor(DatabaseHelper dbHelper, JsonObject tableConfig) {
+        this.dbHelper = dbHelper;
+        this.tableConfig = tableConfig;
+        
+        this.tableName = tableConfig.get("tableName").getAsString();
+        this.objectName = tableConfig.has("objectName") ? tableConfig.get("objectName").getAsString() : "dbo";
+        this.excelFilePath = tableConfig.get("excelFilePath").getAsString();
+        this.sheetName = tableConfig.has("sheetName") ? tableConfig.get("sheetName").getAsString() : "Sheet1";
+        this.headerRowIndex = tableConfig.has("headerRowIndex") ? tableConfig.get("headerRowIndex").getAsInt() : 0;
+        this.createTableIfNotExists = !tableConfig.has("createTableIfNotExists") || tableConfig.get("createTableIfNotExists").getAsBoolean();
+        this.truncateBeforeInsert = tableConfig.has("truncateBeforeInsert") && tableConfig.get("truncateBeforeInsert").getAsBoolean();
+        this.insertMode = tableConfig.has("insertMode") ? tableConfig.get("insertMode").getAsString().toLowerCase() : "insert";
+        this.updateStrategy = tableConfig.has("updateStrategy") ? tableConfig.get("updateStrategy").getAsString().toLowerCase() : "all";
+        
+        // Parse unique keys for upsert mode
+        this.uniqueKeys = new ArrayList<>();
+        if (tableConfig.has("uniqueKey")) {
+            JsonArray uniqueKeyArray = tableConfig.getAsJsonArray("uniqueKey");
+            for (int i = 0; i < uniqueKeyArray.size(); i++) {
+                uniqueKeys.add(uniqueKeyArray.get(i).getAsString());
+            }
+        }
+        
+        // Parse columns
+        this.columns = new ArrayList<>();
+        JsonArray columnsArray = tableConfig.getAsJsonArray("columns");
+        for (int i = 0; i < columnsArray.size(); i++) {
+            columns.add(new DatabaseHelper.ColumnInfo(columnsArray.get(i).getAsJsonObject()));
+        }
+    }
+    
+    public void process() throws Exception {
+        // Validate Excel file
+        File excelFile = new File(excelFilePath);
+        if (!excelFile.exists()) {
+            throw new IOException("Excel file not found: " + excelFilePath);
+        }
+        
+        // Check if table exists
+        boolean tableExists = dbHelper.tableExists(tableName, objectName);
+        
+        if (!tableExists) {
+            if (createTableIfNotExists) {
+                dbHelper.createTable(tableName, objectName, columns);
+            } else {
+                throw new SQLException("Table '" + objectName + "." + tableName + "' does not exist and auto-creation is disabled");
+            }
+        } else {
+            System.out.println("Table '" + objectName + "." + tableName + "' already exists");
+            
+            if (truncateBeforeInsert) {
+                dbHelper.truncateTable(tableName, objectName);
+            }
+        }
+        
+        // Read Excel data
+        System.out.println("Reading Excel file: " + excelFilePath);
+        List<Map<String, Object>> data = readExcel();
+        
+        if (data.isEmpty()) {
+            System.out.println("WARNING: No data found in Excel file");
+            return;
+        }
+        
+        System.out.println("Found " + data.size() + " rows to process");
+        
+        // Insert data
+        insertData(data);
+    }
+    
+    private List<Map<String, Object>> readExcel() throws IOException {
+        List<Map<String, Object>> data = new ArrayList<>();
+        
+        try (FileInputStream fis = new FileInputStream(excelFilePath)) {
+            Workbook workbook;
+            
+            if (excelFilePath.toLowerCase().endsWith(".xlsx")) {
+                workbook = new XSSFWorkbook(fis);
+            } else if (excelFilePath.toLowerCase().endsWith(".xls")) {
+                workbook = new HSSFWorkbook(fis);
+            } else {
+                throw new IllegalArgumentException("Unsupported file format. Use .xlsx or .xls");
+            }
+            
+            // Get sheet
+            Sheet sheet;
+            if (sheetName != null && !sheetName.trim().isEmpty()) {
+                sheet = workbook.getSheet(sheetName);
+                if (sheet == null) {
+                    System.err.println("WARNING: Sheet '" + sheetName + "' not found. Using first sheet.");
+                    sheet = workbook.getSheetAt(0);
+                }
+            } else {
+                sheet = workbook.getSheetAt(0);
+            }
+            
+            if (sheet.getPhysicalNumberOfRows() == 0) {
+                workbook.close();
+                return data;
+            }
+            
+            // Build column letter to index map
+            Map<String, Integer> letterToIndex = buildColumnMap();
+            
+            System.out.println("Header row index: " + headerRowIndex + " (this row will be skipped)");
+            System.out.println("Reading data using Excel column letters: " + getColumnLettersList());
+            
+            // Read data rows - skip header row
+            int dataStartRow = headerRowIndex + 1;
+            for (int i = dataStartRow; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null || isRowEmpty(row)) {
+                    continue;
+                }
+                
+                Map<String, Object> rowData = new LinkedHashMap<>();
+                
+                for (DatabaseHelper.ColumnInfo column : columns) {
+                    Integer cellIndex = letterToIndex.get(column.getExcelColumnLetter().toUpperCase());
+                    if (cellIndex != null) {
+                        Cell cell = row.getCell(cellIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+                        Object value = getCellValue(cell);
+                        rowData.put(column.getColumnName(), value);
+                    } else {
+                        rowData.put(column.getColumnName(), null);
+                    }
+                }
+                
+                data.add(rowData);
+            }
+            
+            workbook.close();
+        }
+        
+        return data;
+    }
+    
+    private String getColumnLettersList() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(columns.get(i).getExcelColumnLetter());
+        }
+        return sb.toString();
+    }
+    
+    private Map<String, Integer> buildColumnMap() {
+        Map<String, Integer> map = new HashMap<>();
+        for (DatabaseHelper.ColumnInfo column : columns) {
+            String letter = column.getExcelColumnLetter().toUpperCase();
+            int index = columnLetterToIndex(letter);
+            map.put(letter, index);
+        }
+        return map;
+    }
+    
+    private int columnLetterToIndex(String letter) {
+        int index = 0;
+        for (int i = 0; i < letter.length(); i++) {
+            index = index * 26 + (letter.charAt(i) - 'A' + 1);
+        }
+        return index - 1; // Convert to 0-based index
+    }
+    
+    private Object getCellValue(Cell cell) {
+        if (cell == null) {
+            return null;
+        }
+        
+        switch (cell.getCellType()) {
+            case STRING:
+                String strValue = cell.getStringCellValue();
+                return strValue.trim().isEmpty() ? null : strValue;
+                
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getDateCellValue();
+                } else {
+                    double numValue = cell.getNumericCellValue();
+                    if (numValue == Math.floor(numValue)) {
+                        return (long) numValue;
+                    }
+                    return numValue;
+                }
+                
+            case BOOLEAN:
+                return cell.getBooleanCellValue();
+                
+            case FORMULA:
+                try {
+                    return cell.getNumericCellValue();
+                } catch (Exception e) {
+                    try {
+                        return cell.getStringCellValue();
+                    } catch (Exception ex) {
+                        return null;
+                    }
+                }
+                
+            case BLANK:
+                return null;
+                
+            default:
+                return null;
+        }
+    }
+    
+    private boolean isRowEmpty(Row row) {
+        for (int i = row.getFirstCellNum(); i < row.getLastCellNum(); i++) {
+            Cell cell = row.getCell(i);
+            if (cell != null && cell.getCellType() != CellType.BLANK) {
+                Object value = getCellValue(cell);
+                if (value != null && !value.toString().trim().isEmpty()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    
+    private void insertData(List<Map<String, Object>> data) throws SQLException {
+        String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+        
+        // Validate insert mode
+        if ("upsert".equals(insertMode)) {
+            if (uniqueKeys.isEmpty()) {
+                throw new SQLException("UPSERT mode requires 'uniqueKey' configuration");
+            }
+            System.out.println("Insert Mode: UPSERT (Update if exists, Insert if not)");
+            System.out.println("Unique Key(s): " + String.join(", ", uniqueKeys));
+            System.out.println("Update Strategy: " + updateStrategy.toUpperCase() + 
+                " (all=update all columns, non-null=update only non-null values)");
+        } else {
+            System.out.println("Insert Mode: INSERT (Insert only)");
+        }
+        
+        int totalRows = data.size();
+        int insertedRows = 0;
+        int updatedRows = 0;
+        int failedRows = 0;
+        
+        Connection conn = dbHelper.getConnection();
+        conn.setAutoCommit(false);
+        
+        try {
+            if ("insert".equals(insertMode)) {
+                // Standard INSERT mode
+                insertedRows = performInsert(conn, data, schema);
+            } else if ("upsert".equals(insertMode)) {
+                // UPSERT mode - check and update or insert
+                int[] results = performUpsert(conn, data, schema);
+                insertedRows = results[0];
+                updatedRows = results[1];
+                failedRows = results[2];
+            }
+            
+            conn.commit();
+            
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
+        }
+        
+        System.out.println("\n=== Insert Summary for " + tableName + " ===");
+        System.out.println("Total rows: " + totalRows);
+        if ("upsert".equals(insertMode)) {
+            System.out.println("Inserted (new): " + insertedRows);
+            System.out.println("Updated (existing): " + updatedRows);
+            System.out.println("Failed: " + failedRows);
+        } else {
+            System.out.println("Successfully inserted: " + insertedRows);
+            System.out.println("Failed: " + failedRows);
+        }
+    }
+    
+    private int performInsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+        StringBuilder sql = new StringBuilder();
+        sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+        
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append("[").append(columns.get(i).getColumnName()).append("]");
+        }
+        
+        sql.append(") VALUES (");
+        
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append("?");
+        }
+        
+        sql.append(")");
+        
+        int batchSize = dbHelper.getBatchSize();
+        int totalRows = data.size();
+        int insertedRows = 0;
+        
+        try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+            
+            for (int i = 0; i < totalRows; i++) {
+                Map<String, Object> row = data.get(i);
+                
+                try {
+                    for (int j = 0; j < columns.size(); j++) {
+                        DatabaseHelper.ColumnInfo column = columns.get(j);
+                        Object value = row.get(column.getColumnName());
+                        column.setParameter(pstmt, j + 1, value);
+                    }
+                    
+                    pstmt.addBatch();
+                    
+                    if ((i + 1) % batchSize == 0 || i == totalRows - 1) {
+                        int[] results = pstmt.executeBatch();
+                        
+                        for (int result : results) {
+                            if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+                                insertedRows++;
+                            }
+                        }
+                        
+                        System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+                    }
+                    
+                } catch (SQLException e) {
+                    System.err.println("Error inserting row " + (i + 1) + ": " + e.getMessage());
+                }
+            }
+        }
+        
+        return insertedRows;
+    }
+    
+    private int[] performUpsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+        int insertedRows = 0;
+        int updatedRows = 0;
+        int failedRows = 0;
+        int totalRows = data.size();
+        
+        // Build SELECT query to check if record exists
+        StringBuilder selectSql = new StringBuilder();
+        selectSql.append("SELECT COUNT(*) FROM [").append(schema).append("].[").append(tableName).append("] WHERE ");
+        for (int i = 0; i < uniqueKeys.size(); i++) {
+            if (i > 0) selectSql.append(" AND ");
+            selectSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
+        }
+        
+        // Build INSERT query
+        StringBuilder insertSql = new StringBuilder();
+        insertSql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) insertSql.append(", ");
+            insertSql.append("[").append(columns.get(i).getColumnName()).append("]");
+        }
+        insertSql.append(") VALUES (");
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) insertSql.append(", ");
+            insertSql.append("?");
+        }
+        insertSql.append(")");
+        
+        try (PreparedStatement selectStmt = conn.prepareStatement(selectSql.toString());
+             PreparedStatement insertStmt = conn.prepareStatement(insertSql.toString())) {
+            
+            for (int i = 0; i < totalRows; i++) {
+                Map<String, Object> row = data.get(i);
+                
+                try {
+                    // Set unique key values for SELECT
+                    int paramIndex = 1;
+                    for (String uniqueKey : uniqueKeys) {
+                        Object value = row.get(uniqueKey);
+                        DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
+                        if (keyColumn != null) {
+                            keyColumn.setParameter(selectStmt, paramIndex++, value);
+                        }
+                    }
+                    
+                    // Check if record exists
+                    ResultSet rs = selectStmt.executeQuery();
+                    rs.next();
+                    boolean exists = rs.getInt(1) > 0;
+                    rs.close();
+                    
+                    if (exists) {
+                        // UPDATE existing record - build dynamic UPDATE query based on strategy
+                        String updateSql = buildUpdateQuery(row, schema);
+                        
+                        if (updateSql != null) {
+                            try (PreparedStatement updateStmt = conn.prepareStatement(updateSql)) {
+                                paramIndex = 1;
+                                
+                                // Set non-key columns for update based on strategy
+                                for (DatabaseHelper.ColumnInfo column : columns) {
+                                    if (!uniqueKeys.contains(column.getColumnName())) {
+                                        Object value = row.get(column.getColumnName());
+                                        
+                                        // For "non-null" strategy, only include non-null values
+                                        if ("all".equals(updateStrategy) || value != null) {
+                                            column.setParameter(updateStmt, paramIndex++, value);
+                                        }
+                                    }
+                                }
+                                
+                                // Set WHERE clause (unique keys)
+                                for (String uniqueKey : uniqueKeys) {
+                                    Object value = row.get(uniqueKey);
+                                    DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
+                                    if (keyColumn != null) {
+                                        keyColumn.setParameter(updateStmt, paramIndex++, value);
+                                    }
+                                }
+                                
+                                int result = updateStmt.executeUpdate();
+                                if (result > 0) {
+                                    updatedRows++;
+                                }
+                            }
+                        } else {
+                            // No columns to update (all values are null in non-null strategy)
+                            updatedRows++; // Count as processed but not modified
+                        }
+                        
+                    } else {
+                        // INSERT new record - validate NOT NULL columns
+                        boolean canInsert = validateNotNullColumns(row);
+                        
+                        if (canInsert) {
+                            paramIndex = 1;
+                            for (DatabaseHelper.ColumnInfo column : columns) {
+                                Object value = row.get(column.getColumnName());
+                                column.setParameter(insertStmt, paramIndex++, value);
+                            }
+                            
+                            int result = insertStmt.executeUpdate();
+                            if (result > 0) {
+                                insertedRows++;
+                            }
+                        } else {
+                            failedRows++;
+                            System.err.println("Row " + (i + 1) + ": Cannot insert - NOT NULL column(s) have null values");
+                        }
+                    }
+                    
+                    if ((i + 1) % 100 == 0 || i == totalRows - 1) {
+                        System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+                    }
+                    
+                } catch (SQLException e) {
+                    failedRows++;
+                    System.err.println("Error processing row " + (i + 1) + ": " + e.getMessage());
+                }
+            }
+        }
+        
+        return new int[]{insertedRows, updatedRows, failedRows};
+    }
+    
+    private String buildUpdateQuery(Map<String, Object> row, String schema) {
+        StringBuilder updateSql = new StringBuilder();
+        updateSql.append("UPDATE [").append(schema).append("].[").append(tableName).append("] SET ");
+        
+        int updateColCount = 0;
+        for (DatabaseHelper.ColumnInfo column : columns) {
+            if (!uniqueKeys.contains(column.getColumnName())) {
+                Object value = row.get(column.getColumnName());
+                
+                // For "non-null" strategy, only include non-null values
+                if ("all".equals(updateStrategy) || value != null) {
+                    if (updateColCount > 0) updateSql.append(", ");
+                    updateSql.append("[").append(column.getColumnName()).append("] = ?");
+                    updateColCount++;
+                }
+            }
+        }
+        
+        // If no columns to update, return null
+        if (updateColCount == 0) {
+            return null;
+        }
+        
+        updateSql.append(" WHERE ");
+        for (int i = 0; i < uniqueKeys.size(); i++) {
+            if (i > 0) updateSql.append(" AND ");
+            updateSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
+        }
+        
+        return updateSql.toString();
+    }
+    
+    private boolean validateNotNullColumns(Map<String, Object> row) {
+        for (DatabaseHelper.ColumnInfo column : columns) {
+            if (!column.isNullable()) {
+                Object value = row.get(column.getColumnName());
+                if (value == null) {
+                    System.err.println("Validation failed: Column '" + column.getColumnName() + 
+                        "' is NOT NULL but has null value");
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    
+    private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
+        for (DatabaseHelper.ColumnInfo column : columns) {
+            if (column.getColumnName().equals(columnName)) {
+                return column;
+            }
+        }
+        return null;
+    }
+}
+
+4.config.jsob
+
+{
+  "EmpData": {
+    "tableName": "Employees",
+    "objectName": "dbo",
+    "excelFilePath": "C:/Data/Excel/employees.xlsx",
+    "sheetName": "Sheet1",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "upsert",
+    "uniqueKey": ["EmployeeID"],
+    "updateStrategy": "non-null",
+    "columns": [
+      {
+        "columnName": "EmployeeID",
+        "dataType": "INT",
+        "excelColumnLetter": "A",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": null
+      },
+      {
+        "columnName": "FirstName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": 100
+      },
+      {
+        "columnName": "LastName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "C",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": 100
+      },
+      {
+        "columnName": "Email",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "D",
+        "isPrimaryKey": false,
+        "isNullable": true,
+        "maxLength": 255
+      },
+      {
+        "columnName": "Department",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "E",
+        "isPrimaryKey": false,
+        "isNullable": true,
+        "maxLength": 100
+      },
+      {
+        "columnName": "Salary",
+        "dataType": "DECIMAL",
+        "excelColumnLetter": "F",
+        "isPrimaryKey": false,
+        "isNullable": true,
+        "maxLength": null,
+        "precision": 18,
+        "scale": 2
+      },
+      {
+        "columnName": "HireDate",
+        "dataType": "DATE",
+        "excelColumnLetter": "G",
+        "isPrimaryKey": false,
+        "isNullable": true,
+        "maxLength": null
+      },
+      {
+        "columnName": "IsActive",
+        "dataType": "BIT",
+        "excelColumnLetter": "H",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": null
+      }
+    ]
+  },
+  "ProdInventory": {
+    "tableName": "Products",
+    "objectName": "sales",
+    "excelFilePath": "D:/Projects/Data/products.xlsx",
+    "sheetName": "Products",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "insert",
+    "columns": [
+      {
+        "columnName": "ProductID",
+        "dataType": "INT",
+        "excelColumnLetter": "A",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": null
+      },
+      {
+        "columnName": "ProductName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": 200
+      },
+      {
+        "columnName": "Price",
+        "dataType": "DECIMAL",
+        "excelColumnLetter": "C",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": null,
+        "precision": 10,
+        "scale": 2
+      },
+      {
+        "columnName": "Stock",
+        "dataType": "INT",
+        "excelColumnLetter": "D",
+        "isPrimaryKey": false,
+        "isNullable": false,
+        "maxLength": null
+      }
+    ]
+  }
+}
+
+5.database properties
+
+# Database Connection Configuration
+server=localhost
+port=1433
+databaseName=MyDatabase
+username=sa
+password=YourPassword123
+
+# Optional: Batch size for bulk inserts (default: 1000)
+batchSize=1000
+
+6.# Excel to MSSQL Data Loader - Features & Enhancement Ideas
+
+## 🎯 Current Features
+
+### Core Functionality
+1. **Excel to Database Loading**
+   - Supports both `.xlsx` and `.xls` file formats
+   - Reads data from specific Excel sheets
+   - Maps Excel columns (A, B, C) to database columns
+   - Handles multiple data types (INT, VARCHAR, DECIMAL, DATE, BIT, etc.)
+
+2. **Flexible Configuration**
+   - Separate database configuration (`database.properties`)
+   - Table-specific JSON configuration (`config.json`)
+   - Support for multiple table configurations in single config file
+   - Command-line table key selection (process one table at a time)
+
+3. **Database Management**
+   - Auto-create tables if they don't exist (configurable)
+   - Option to truncate table before insert
+   - Support for custom schema names (not just `dbo`)
+   - Database existence validation (no auto-creation)
+   - Identity column (ID) auto-generated for each table
+
+4. **Data Handling**
+   - Batch insert support (configurable batch size, default 1000)
+   - Automatic header row skipping
+   - Empty row detection and skipping
+   - Type conversion with fallback to string
+   - Null value handling
+
+5. **Error Handling & Logging**
+   - Detailed console logging
+   - Row-level error reporting
+   - Insert summary statistics
+   - Graceful error handling with rollback support
+
+6. **Path Flexibility**
+   - Support for absolute paths
+   - Support for relative paths
+   - Network/UNC path support
+   - Cross-platform path handling
+
+---
+
+## 🚀 Potential Features to Add
+
+### 1. **Enhanced Data Validation**
+```
+- Pre-insert data validation rules
+- Custom validation patterns (regex for email, phone, etc.)
+- Data type validation before insert
+- Duplicate detection based on specific columns
+- Date range validation
+- Min/Max value constraints
+```
+
+**Config Example:**
+```json
+{
+  "columnName": "Email",
+  "validationRule": "email",
+  "pattern": "^[\\w-\\.]+@([\\w-]+\\.)+[\\w-]{2,4}$"
+}
+```
+
+---
+
+### 2. **Data Transformation**
+```
+- String trimming/formatting
+- Date format conversion
+- Currency formatting
+- Case conversion (UPPER/LOWER)
+- Default value assignment for nulls
+- Calculated/derived columns
+- Custom transformation functions
+```
+
+**Config Example:**
+```json
+{
+  "columnName": "Email",
+  "transform": {
+    "type": "lowercase",
+    "trim": true,
+    "defaultValue": "noemail@example.com"
+  }
+}
+```
+
+---
+
+### 3. **Update Mode (Not Just Insert)**
+```
+- UPSERT operation (INSERT or UPDATE based on key)
+- Update existing records based on primary key
+- Merge strategy configuration
+- Conflict resolution rules
+```
+
+**Config Example:**
+```json
+{
+  "insertMode": "upsert",
+  "uniqueKey": ["EmployeeID"],
+  "onConflict": "update"
+}
+```
+
+---
+
+### 4. **Multiple Sheet Support**
+```
+- Process multiple sheets in one Excel file
+- Sheet name pattern matching
+- Dynamic sheet discovery
+- Cross-sheet data relationships
+```
+
+**Config Example:**
+```json
+{
+  "excelFilePath": "employees.xlsx",
+  "sheets": [
+    {"sheetName": "Employees", "tableName": "Employees"},
+    {"sheetName": "Departments", "tableName": "Departments"}
+  ]
+}
+```
+
+---
+
+### 5. **Data Filtering**
+```
+- Skip rows based on conditions
+- Column value filters
+- Date range filters
+- Include/Exclude patterns
+```
+
+**Config Example:**
+```json
+{
+  "filters": [
+    {"column": "Status", "equals": "Active"},
+    {"column": "Salary", "greaterThan": 0}
+  ]
+}
+```
+
+---
+
+### 6. **Logging & Reporting**
+```
+- Log file generation
+- HTML/PDF report generation
+- Email notifications on completion
+- Error log export to file
+- Success/failure statistics
+- Processing time metrics
+```
+
+---
+
+### 7. **Scheduling & Automation**
+```
+- Built-in scheduler (cron-like)
+- Watch folder for new Excel files
+- Auto-process on file arrival
+- Retry mechanism for failures
+- Incremental loads (only new data)
+```
+
+---
+
+### 8. **Data Preview**
+```
+- Preview first N rows before insert
+- Dry-run mode (validation without insert)
+- Column mapping verification
+- Data type mismatch warnings
+```
+
+**Command:**
+```bash
+java -jar ExcelToMSSQL.jar EmpData --preview 10
+java -jar ExcelToMSSQL.jar EmpData --dry-run
+```
+
+---
+
+### 9. **Multi-Table Processing**
+```
+- Process all tables in one command
+- Table dependency management
+- Foreign key relationship handling
+- Transaction across multiple tables
+```
+
+**Command:**
+```bash
+java -jar ExcelToMSSQL.jar --all
+java -jar ExcelToMSSQL.jar EmpData,ProdInventory
+```
+
+---
+
+### 10. **Excel Template Generation**
+```
+- Generate Excel template from config
+- Create sample Excel file
+- Include data validation in Excel
+- Column header auto-generation
+```
+
+**Command:**
+```bash
+java -jar ExcelToMSSQL.jar --generate-template EmpData
+```
+
+---
+
+### 11. **Lookup/Reference Data**
+```
+- Foreign key value lookup from other tables
+- Replace values based on mapping table
+- Data enrichment from database
+```
+
+**Config Example:**
+```json
+{
+  "columnName": "DepartmentName",
+  "lookup": {
+    "table": "Departments",
+    "matchColumn": "DeptName",
+    "returnColumn": "DeptID"
+  }
+}
+```
+
+---
+
+### 12. **Parallel Processing**
+```
+- Multi-threaded file processing
+- Parallel batch inserts
+- Performance optimization for large files
+```
+
+---
+
+### 13. **Backup & Rollback**
+```
+- Auto-backup before truncate
+- Rollback on error
+- Point-in-time restore
+- Backup to separate table
+```
+
+---
+
+### 14. **Column Mapping Enhancement**
+```
+- Map multiple Excel columns to one DB column
+- Split one Excel column to multiple DB columns
+- Conditional column mapping
+- Dynamic column detection
+```
+
+---
+
+### 15. **Support for Other Databases**
+```
+- MySQL support
+- PostgreSQL support
+- Oracle support
+- SQLite support
+- Database-agnostic configuration
+```
+
+---
+
+### 16. **GUI Interface (Optional)**
+```
+- Simple Swing/JavaFX GUI
+- Config file editor
+- Real-time progress visualization
+- Drag-and-drop Excel files
+```
+
+---
+
+### 17. **REST API Wrapper**
+```
+- Expose functionality as REST API
+- Web-based file upload
+- Remote trigger capability
+- Cloud deployment ready
+```
+
+---
+
+### 18. **Data Quality Checks**
+```
+- Completeness checks (missing required fields)
+- Consistency checks (cross-column validation)
+- Accuracy checks (value range validation)
+- Uniqueness checks
+- Referential integrity checks
+```
+
+---
+
+### 19. **Incremental Load Support**
+```
+- Track last processed row
+- Resume from failure point
+- Change data capture (CDC)
+- Modified date tracking
+```
+
+---
+
+### 20. **Excel Formula Evaluation**
+```
+- Evaluate Excel formulas before insert
+- Support calculated fields
+- Handle complex Excel functions
+```
+
+---
+
+## 📊 Priority Recommendations
+
+### High Priority (Quick Wins)
+1. ✅ **Data Validation** - Prevent bad data entry
+2. ✅ **Update/Upsert Mode** - More flexible than insert-only
+3. ✅ **Dry-Run/Preview** - Verify before actual insert
+4. ✅ **Better Logging** - File-based logs for audit trail
+
+### Medium Priority (Good Value)
+5. ✅ **Data Transformation** - Clean data on-the-fly
+6. ✅ **Multi-Table Processing** - Process all at once
+7. ✅ **Data Filtering** - Skip unwanted rows
+8. ✅ **Multiple Sheet Support** - One file, multiple tables
+
+### Low Priority (Nice to Have)
+9. ⭐ **GUI Interface** - If non-technical users need it
+10. ⭐ **Scheduling** - For automated daily loads
+11. ⭐ **Other Database Support** - If needed
+
+---
+
+## 🎯 Next Steps
+
+Would you like me to implement any of these features? I recommend starting with:
+
+1. **Upsert Mode** - Very common requirement
+2. **Data Validation** - Prevents errors at source
+3. **Dry-Run Mode** - Safe testing capability
+4. **Better Logging** - Log to file for tracking
+
+Let me know which features interest you most!
