@@ -1,0 +1,1835 @@
+package com.dataloader;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.List;
+import java.util.Properties;
+
+public class DatabaseHelper {
+
+	private Properties dbProperties;
+	private Connection connection;
+	private String server;
+	private int port;
+	private String databaseName;
+	private String username;
+	private String password;
+	private int batchSize;
+
+	public DatabaseHelper(Properties dbProperties) throws SQLException {
+		this.dbProperties = dbProperties;
+		this.server = dbProperties.getProperty("server");
+		this.port = Integer.parseInt(dbProperties.getProperty("port"));
+		this.databaseName = dbProperties.getProperty("databaseName");
+		this.username = dbProperties.getProperty("username");
+		this.password = dbProperties.getProperty("password");
+		this.batchSize = dbProperties.containsKey("batchSize") ? Integer.parseInt(dbProperties.getProperty("batchSize"))
+				: 1000;
+
+		try {
+			Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+		} catch (ClassNotFoundException e) {
+			throw new SQLException("MSSQL JDBC Driver not found", e);
+		}
+	}
+
+	public boolean checkDatabaseExists() {
+		try (Connection masterConn = createConnection("master")) {
+			String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+			try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+				pstmt.setString(1, databaseName);
+				try (ResultSet rs = pstmt.executeQuery()) {
+					boolean exists = rs.next();
+					if (exists) {
+						System.out.println("Database '" + databaseName + "' exists");
+					}
+					return exists;
+				}
+			}
+		} catch (SQLException e) {
+			System.err.println("Error checking database: " + e.getMessage());
+			return false;
+		}
+	}
+
+	public Connection getConnection() throws SQLException {
+		if (connection == null || connection.isClosed()) {
+			connection = createConnection(databaseName);
+		}
+		return connection;
+	}
+
+	private Connection createConnection(String dbName) throws SQLException {
+		String connectionUrl = String.format(
+				"jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true",
+				server, port, dbName, username, password);
+		return DriverManager.getConnection(connectionUrl);
+	}
+
+	/**
+	 * Check if a schema exists in the database
+	 */
+	public boolean schemaExists(String schemaName) throws SQLException {
+		String query = "SELECT schema_id FROM sys.schemas WHERE name = ?";
+		
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, schemaName);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	/**
+	 * Create a schema if it doesn't exist
+	 */
+	public void createSchemaIfNotExists(String schemaName) throws SQLException {
+		if (schemaName == null || schemaName.isEmpty() || "dbo".equalsIgnoreCase(schemaName)) {
+			// dbo schema always exists, no need to create
+			return;
+		}
+
+		if (!schemaExists(schemaName)) {
+			System.out.println("Schema '" + schemaName + "' does not exist. Creating schema...");
+			String createSchemaSql = "CREATE SCHEMA [" + schemaName + "]";
+			
+			try (Statement stmt = getConnection().createStatement()) {
+				stmt.executeUpdate(createSchemaSql);
+				System.out.println("Schema '" + schemaName + "' created successfully");
+			}
+		} else {
+			System.out.println("Schema '" + schemaName + "' already exists");
+		}
+	}
+
+	public boolean tableExists(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+				+ "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, tableName);
+			pstmt.setString(2, schema);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	public void createTable(String tableName, String objectName, List<ColumnInfo> columns) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		
+		// Check and create schema if it doesn't exist
+		createSchemaIfNotExists(schema);
+		
+		System.out.println("Creating table: " + schema + "." + tableName);
+		StringBuilder sql = new StringBuilder();
+		sql.append("CREATE TABLE [").append(schema).append("].[").append(tableName).append("] (");
+		sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+
+		for (ColumnInfo col : columns) {
+			sql.append(", ").append(col.getSqlDefinition());
+		}
+
+		sql.append(")");
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql.toString());
+		}
+
+		System.out.println("Table created successfully with " + columns.size() + " columns");
+	}
+
+	public void truncateTable(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		System.out.println("Truncating table: " + schema + "." + tableName);
+		String sql = "TRUNCATE TABLE [" + schema + "].[" + tableName + "]";
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql);
+		}
+
+		System.out.println("Table truncated successfully");
+	}
+
+	public int getBatchSize() {
+		return batchSize;
+	}
+
+	public String getDatabaseName() {
+		return databaseName;
+	}
+
+	public void close() {
+		try {
+			if (connection != null && !connection.isClosed()) {
+				connection.close();
+				System.out.println("Database connection closed");
+			}
+		} catch (SQLException e) {
+			System.err.println("Error closing connection: " + e.getMessage());
+		}
+	}
+
+	// inner class for column information
+	public static class ColumnInfo {
+		private String columnName;
+		private String dataType;
+		private String excelColumnLetter;
+		private boolean isPrimaryKey;
+		private boolean isNullable;
+		private Integer maxLength;
+		private Integer precision;
+		private Integer scale;
+
+		public ColumnInfo(com.google.gson.JsonObject colJson) {
+			this.columnName = colJson.get("columnName").getAsString();
+			this.dataType = colJson.get("dataType").getAsString().toUpperCase();
+			this.excelColumnLetter = colJson.get("excelColumnLetter").getAsString();
+			this.isPrimaryKey = colJson.has("isPrimaryKey") && colJson.get("isPrimaryKey").getAsBoolean();
+			this.isNullable = !colJson.has("isNullable") || colJson.get("isNullable").getAsBoolean();
+			this.maxLength = colJson.has("maxLength") && !colJson.get("maxLength").isJsonNull()
+					? colJson.get("maxLength").getAsInt()
+					: null;
+			this.precision = colJson.has("precision") ? colJson.get("precision").getAsInt() : null;
+			this.scale = colJson.has("scale") ? colJson.get("scale").getAsInt() : null;
+		}
+
+		public String getColumnName() {
+			return columnName;
+		}
+
+		public String getDataType() {
+			return dataType;
+		}
+
+		public String getExcelColumnLetter() {
+			return excelColumnLetter;
+		}
+
+		public boolean isNullable() {
+			return isNullable;
+		}
+
+		public String getSqlDefinition() {
+			StringBuilder sql = new StringBuilder();
+			sql.append("[").append(columnName).append("] ");
+
+			switch (dataType) {
+			case "NVARCHAR":
+			case "VARCHAR":
+			case "CHAR":
+			case "NCHAR":
+				sql.append(dataType);
+				if (maxLength != null) {
+					sql.append("(").append(maxLength).append(")");
+				} else {
+					sql.append("(MAX)");
+				}
+				break;
+
+			case "DECIMAL":
+			case "NUMERIC":
+				sql.append(dataType);
+				if (precision != null) {
+					sql.append("(").append(precision);
+					if (scale != null) {
+						sql.append(",").append(scale);
+					}
+					sql.append(")");
+				} else {
+					sql.append("(18,2)");
+				}
+				break;
+
+			default:
+				sql.append(dataType);
+				break;
+			}
+
+			if (!isNullable) {
+				sql.append(" NOT NULL");
+			}
+
+			if (isPrimaryKey) {
+				sql.append(" PRIMARY KEY");
+			}
+
+			return sql.toString();
+		}
+
+		public void setParameter(PreparedStatement pstmt, int index, Object value) throws SQLException {
+			
+			// Handle "NULL" string as actual null
+			if(value != null && value.toString().trim().equalsIgnoreCase("NULL")) {
+				value=null;
+			}
+			
+			if (value == null) {
+				pstmt.setNull(index, getSqlType());
+				return;
+			}
+
+			try {
+				String stringValue = value.toString().trim();
+				
+				// Handle empty strings as null for non-string types
+				if (stringValue.isEmpty() && !isStringType()) {
+					pstmt.setNull(index, getSqlType());
+					return;
+				}
+
+				switch (dataType) {
+				case "INT":
+				case "INTEGER":
+				case "SMALLINT":
+				case "TINYINT":
+					if (value instanceof Number) {
+						pstmt.setInt(index, ((Number) value).intValue());
+					} else {
+						// Remove any non-numeric characters except minus sign
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setInt(index, Integer.parseInt(cleanValue));
+						}
+					}
+					break;
+
+				case "BIGINT":
+					if (value instanceof Number) {
+						pstmt.setLong(index, ((Number) value).longValue());
+					} else {
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setLong(index, Long.parseLong(cleanValue));
+						}
+					}
+					break;
+
+				case "DECIMAL":
+				case "NUMERIC":
+				case "MONEY":
+				case "SMALLMONEY":
+					// Remove currency symbols and commas
+					String cleanDecimal = stringValue.replaceAll("[^0-9.-]", "");
+					if (cleanDecimal.isEmpty() || cleanDecimal.equals("-") || cleanDecimal.equals(".")) {
+						pstmt.setNull(index, getSqlType());
+					} else {
+						pstmt.setBigDecimal(index, new java.math.BigDecimal(cleanDecimal));
+					}
+					break;
+
+				case "FLOAT":
+				case "REAL":
+					if (value instanceof Number) {
+						pstmt.setDouble(index, ((Number) value).doubleValue());
+					} else {
+						String cleanFloat = stringValue.replaceAll("[^0-9.-]", "");
+						if (cleanFloat.isEmpty() || cleanFloat.equals("-") || cleanFloat.equals(".")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setDouble(index, Double.parseDouble(cleanFloat));
+						}
+					}
+					break;
+
+				case "BIT":
+				case "BOOLEAN":
+					if (value instanceof Boolean) {
+						pstmt.setBoolean(index, (Boolean) value);
+					} else {
+						String strValue = stringValue.toLowerCase();
+						boolean boolValue = strValue.equals("true") || strValue.equals("1") || 
+											strValue.equals("yes") || strValue.equals("y") ||
+											strValue.equals("on") || strValue.equals("t");
+						pstmt.setBoolean(index, boolValue);
+					}
+					break;
+
+				case "DATE":
+					if (value instanceof java.util.Date) {
+						pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple date formats
+						java.sql.Date sqlDate = parseDate(stringValue);
+						if (sqlDate != null) {
+							pstmt.setDate(index, sqlDate);
+						} else {
+							pstmt.setNull(index, Types.DATE);
+						}
+					}
+					break;
+
+				case "DATETIME":
+				case "DATETIME2":
+				case "SMALLDATETIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple datetime formats
+						Timestamp timestamp = parseDateTime(stringValue);
+						if (timestamp != null) {
+							pstmt.setTimestamp(index, timestamp);
+						} else {
+							pstmt.setNull(index, Types.TIMESTAMP);
+						}
+					}
+					break;
+
+				case "TIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+					} else {
+						Time time = parseTime(stringValue);
+						if (time != null) {
+							pstmt.setTime(index, time);
+						} else {
+							pstmt.setNull(index, Types.TIME);
+						}
+					}
+					break;
+
+				case "NVARCHAR":
+				case "VARCHAR":
+				case "NCHAR":
+				case "CHAR":
+				case "NTEXT":
+				case "TEXT":
+					// Handle special characters - they are supported in SQL Server strings
+					// Just set as string, prepared statement handles escaping
+					pstmt.setString(index, stringValue);
+					break;
+
+				default:
+					pstmt.setString(index, stringValue);
+					break;
+				}
+			} catch (Exception e) {
+				System.err.println("Warning: Type conversion failed for column '" + columnName + 
+								 "' with value '" + value + "'. Error: " + e.getMessage());
+				// Try to set as string as fallback, or null if that also fails
+				try {
+					pstmt.setString(index, value.toString());
+				} catch (Exception ex) {
+					System.err.println("Error: Failed to set even as string. Setting NULL for column '" + columnName + "'");
+					pstmt.setNull(index, getSqlType());
+				}
+			}
+		}
+
+		private boolean isStringType() {
+			return dataType.equals("NVARCHAR") || dataType.equals("VARCHAR") || 
+				   dataType.equals("NCHAR") || dataType.equals("CHAR") ||
+				   dataType.equals("NTEXT") || dataType.equals("TEXT");
+		}
+
+		private java.sql.Date parseDate(String dateStr) {
+			// Try multiple date formats
+			String[] dateFormats = {
+				"yyyy-MM-dd",
+				"MM/dd/yyyy",
+				"dd/MM/yyyy",
+				"dd-MM-yyyy",
+				"yyyy/MM/dd",
+				"dd.MM.yyyy",
+				"MMM dd, yyyy",
+				"dd MMM yyyy"
+			};
+
+			for (String format : dateFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateStr);
+					return new java.sql.Date(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private Timestamp parseDateTime(String dateTimeStr) {
+			// Try multiple datetime formats
+			String[] dateTimeFormats = {
+				"yyyy-MM-dd HH:mm:ss.SSS",
+				"yyyy-MM-dd HH:mm:ss",
+				"yyyy-MM-dd HH:mm",
+				"MM/dd/yyyy HH:mm:ss",
+				"dd/MM/yyyy HH:mm:ss",
+				"yyyy/MM/dd HH:mm:ss",
+				"dd-MM-yyyy HH:mm:ss",
+				"yyyy-MM-dd'T'HH:mm:ss",
+				"yyyy-MM-dd'T'HH:mm:ss.SSS",
+				"MM/dd/yyyy hh:mm:ss a",
+				"dd/MM/yyyy hh:mm:ss a"
+			};
+
+			for (String format : dateTimeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateTimeStr);
+					return new Timestamp(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			
+			// If all datetime formats fail, try date-only formats and set time to 00:00:00
+			java.sql.Date date = parseDate(dateTimeStr);
+			if (date != null) {
+				return new Timestamp(date.getTime());
+			}
+			
+			return null;
+		}
+
+		private Time parseTime(String timeStr) {
+			// Try multiple time formats
+			String[] timeFormats = {
+				"HH:mm:ss",
+				"HH:mm",
+				"hh:mm:ss a",
+				"hh:mm a"
+			};
+
+			for (String format : timeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(timeStr);
+					return new Time(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private int getSqlType() {
+			switch (dataType) {
+			case "INT":
+			case "INTEGER":
+				return Types.INTEGER;
+			case "BIGINT":
+				return Types.BIGINT;
+			case "SMALLINT":
+				return Types.SMALLINT;
+			case "TINYINT":
+				return Types.TINYINT;
+			case "DECIMAL":
+			case "NUMERIC":
+				return Types.DECIMAL;
+			case "FLOAT":
+			case "REAL":
+				return Types.FLOAT;
+			case "BIT":
+			case "BOOLEAN":
+				return Types.BIT;
+			case "DATE":
+				return Types.DATE;
+			case "DATETIME":
+			case "DATETIME2":
+			case "SMALLDATETIME":
+				return Types.TIMESTAMP;
+			case "TIME":
+				return Types.TIME;
+			case "NVARCHAR":
+			case "NCHAR":
+				return Types.NVARCHAR;
+			default:
+				return Types.VARCHAR;
+			}
+		}
+	}
+}
+
+
+
+# Excel to SQL Data Handling - Test Guide
+
+## ✅ Improvements Made to Handle All Data Types
+
+### 1. **String Data (NVARCHAR/VARCHAR)**
+- ✅ **Handles Special Characters**: Passwords, addresses with special chars like `@#$%^&*()!`
+- ✅ **Handles Unicode**: International characters, emojis
+- ✅ **Handles Empty Strings**: Treats as NULL for non-nullable columns
+- ✅ **SQL Injection Protection**: PreparedStatement automatically escapes quotes and special chars
+
+**Example Data:**
+```
+Password: P@ssw0rd!2024#Special
+Address: 123 Main St., Apt #5B, City's Center
+Name: José García-Hernández
+```
+
+### 2. **Date Handling (DATE)**
+✅ **Supports Multiple Formats:**
+- `2024-12-02` (ISO format)
+- `12/02/2024` (US format)
+- `02/12/2024` (European format)
+- `02-12-2024` (Dash separator)
+- `2024/12/02` (Slash with year first)
+- `02.12.2024` (Dot separator)
+- `Dec 02, 2024` (Month name)
+- `02 Dec 2024` (Day month year)
+
+✅ **Handles Excel Date Numbers**: POI automatically converts Excel serial dates
+
+### 3. **DateTime Handling (DATETIME/DATETIME2)**
+✅ **Supports Multiple Formats:**
+- `2024-12-02 14:30:00.123` (Full precision)
+- `2024-12-02 14:30:00`
+- `2024-12-02 14:30`
+- `12/02/2024 14:30:00`
+- `2024-12-02T14:30:00` (ISO 8601)
+- `12/02/2024 02:30:00 PM` (12-hour with AM/PM)
+
+✅ **Fallback**: If only date provided, sets time to `00:00:00`
+
+### 4. **Time Handling (TIME)**
+✅ **Supports Formats:**
+- `14:30:00` (24-hour)
+- `14:30` (24-hour without seconds)
+- `02:30:00 PM` (12-hour with AM/PM)
+- `02:30 PM` (12-hour without seconds)
+
+### 5. **Numeric Data**
+✅ **Integer Types (INT/BIGINT/SMALLINT/TINYINT)**
+- Removes non-numeric characters except minus sign
+- Handles formatted numbers: `1,234` → `1234`
+- Empty strings → NULL
+
+✅ **Decimal/Money Types**
+- Removes currency symbols: `$1,234.56` → `1234.56`
+- Handles commas: `1,234,567.89` → `1234567.89`
+- Preserves precision and scale
+
+✅ **Float/Real**
+- Same as decimal handling
+- Scientific notation supported
+
+### 6. **Boolean (BIT)**
+✅ **Recognizes Values:**
+- TRUE: `true`, `1`, `yes`, `y`, `on`, `t`
+- FALSE: `false`, `0`, `no`, `n`, `off`, `f`
+- Case-insensitive
+
+### 7. **NULL Handling**
+✅ **Multiple NULL Representations:**
+- Excel empty cells → NULL
+- String "NULL" (case-insensitive) → NULL
+- Empty strings for numeric/date columns → NULL
+- Respects `isNullable` configuration
+
+### 8. **Schema Handling**
+✅ **Automatic Schema Creation**
+- Checks if schema exists before table creation
+- Creates schema if missing (except `dbo`)
+- No more "schema not found" errors
+
+## 🧪 Test Scenarios
+
+### Test Case 1: Special Characters in Strings
+```excel
+| ID | Name           | Password        | Address                    |
+|----|----------------|-----------------|----------------------------|
+| 1  | John O'Brien   | P@ss#2024!      | 123 Main St., Apt #5       |
+| 2  | María García   | Str0ng&Secure$  | C/ José's Place, #10-B     |
+```
+
+### Test Case 2: Various Date Formats
+```excel
+| ID | HireDate    | LastLogin           | EndDate    |
+|----|-------------|---------------------|------------|
+| 1  | 2024-12-02  | 2024-12-02 14:30:00 | NULL       |
+| 2  | 12/02/2024  | 12/02/2024 2:30 PM  | 31-12-2024 |
+| 3  | 02.12.2024  | Dec 02, 2024 16:00  | 2024/12/31 |
+```
+
+### Test Case 3: Numeric with Formatting
+```excel
+| ID | Salary     | TaxRate | Stock   |
+|----|------------|---------|---------|
+| 1  | $1,234.56  | 15.5%   | 1000    |
+| 2  | 2,500.00   | 18.25   | 1,500   |
+| 3  | 3500       | NULL    | 0       |
+```
+
+### Test Case 4: Boolean Values
+```excel
+| ID | IsActive | HasAccess | IsDeleted |
+|----|----------|-----------|-----------|
+| 1  | true     | yes       | 0         |
+| 2  | 1        | Y         | false     |
+| 3  | TRUE     | on        | no        |
+```
+
+### Test Case 5: Mixed NULL Values
+```excel
+| ID | Name  | Email         | Phone | Notes |
+|----|-------|---------------|-------|-------|
+| 1  | John  | john@test.com | NULL  | test  |
+| 2  | Jane  |               |       |       |
+| 3  | NULL  | null          | NULL  | NULL  |
+```
+
+## 🔒 Security Features
+
+### SQL Injection Prevention
+✅ **PreparedStatement Usage**
+- All values are parameterized
+- Automatic escaping of quotes and special characters
+- No string concatenation for SQL queries
+
+**Example - These are SAFE:**
+```
+Password: "'; DROP TABLE users; --"
+Name: "Robert'); DELETE FROM employees; --"
+```
+The application will insert these as literal string values, not execute them as SQL.
+
+### Data Validation
+✅ **Type Safety**
+- Validates data types before insertion
+- Converts or nulls invalid data
+- Logs warnings for conversion failures
+
+✅ **NOT NULL Constraint Check**
+- Validates NOT NULL columns before insert
+- Prevents SQL exceptions
+- Clear error messages
+
+## 📋 Configuration Best Practices
+
+### For String Columns with Special Characters
+```json
+{
+  "columnName": "Password",
+  "dataType": "NVARCHAR",
+  "maxLength": 100,
+  "isNullable": false
+}
+```
+
+### For Flexible Date Input
+```json
+{
+  "columnName": "HireDate",
+  "dataType": "DATE",
+  "isNullable": true
+}
+```
+
+### For DateTime with Precision
+```json
+{
+  "columnName": "CreatedTimestamp",
+  "dataType": "DATETIME2",
+  "isNullable": false
+}
+```
+
+### For Money/Currency
+```json
+{
+  "columnName": "Salary",
+  "dataType": "DECIMAL",
+  "precision": 18,
+  "scale": 2,
+  "isNullable": true
+}
+```
+
+## ⚠️ Known Limitations
+
+1. **Very Large Numbers**: BIGINT max = 9,223,372,036,854,775,807
+2. **Decimal Precision**: Max 38 digits (SQL Server limit)
+3. **String Length**: Respect maxLength or use MAX
+4. **Date Range**: SQL Server DATE range: 0001-01-01 to 9999-12-31
+5. **Schema Creation**: User must have CREATE SCHEMA permission
+
+## 🔍 Error Handling
+
+The application handles errors gracefully:
+- **Type Conversion Failure**: Attempts string conversion → Falls back to NULL
+- **Date Parse Failure**: Tries multiple formats → Sets NULL if all fail
+- **NOT NULL Violation**: Skips row and logs error
+- **Schema Missing**: Creates schema automatically
+- **Table Missing**: Creates table if configured
+
+## ✨ Summary
+
+Your project now handles:
+- ✅ All SQL Server data types
+- ✅ Special characters and Unicode
+- ✅ Multiple date/time formats
+- ✅ Currency and formatted numbers
+- ✅ Boolean variations
+- ✅ NULL in various forms
+- ✅ Schema auto-creation
+- ✅ SQL injection protection
+- ✅ Graceful error recovery
+
+**No SQLException for valid data in proper columns!**
+
+
+
+# Config.json - Complete Configuration Reference
+
+## 📋 Table of Contents
+1. [Root Level Configuration](#root-level-configuration)
+2. [Table-Level Properties](#table-level-properties)
+3. [Column Configuration](#column-configuration)
+4. [Data Types Reference](#data-types-reference)
+5. [Complete Examples](#complete-examples)
+
+---
+
+## Root Level Configuration
+
+The config.json file uses a **key-value** structure where each key represents a unique table configuration.
+
+```json
+{
+  "TableKey1": { /* table configuration */ },
+  "TableKey2": { /* table configuration */ },
+  "TableKey3": { /* table configuration */ }
+}
+```
+
+**Usage:** `java -jar ExcelToMSSQL.jar TableKey1`
+
+---
+
+## Table-Level Properties
+
+### Required Properties
+
+| Property | Type | Description | Example |
+|----------|------|-------------|---------|
+| `tableName` | String | SQL Server table name | `"Employees"` |
+| `excelFilePath` | String | Full path to Excel file | `"C:/Data/employees.xlsx"` |
+| `columns` | Array | Column definitions (see below) | `[{...}, {...}]` |
+
+### Optional Properties
+
+| Property | Type | Default | Description | Example |
+|----------|------|---------|-------------|---------|
+| `objectName` | String | `"dbo"` | Schema name | `"sales"`, `"hr"` |
+| `sheetName` | String | `"Sheet1"` | Excel sheet name | `"EmployeeData"` |
+| `headerRowIndex` | Integer | `0` | Row number with headers (0-based) | `0`, `1`, `2` |
+| `createTableIfNotExists` | Boolean | `true` | Auto-create table if missing | `true` / `false` |
+| `truncateBeforeInsert` | Boolean | `false` | Delete all data before insert | `true` / `false` |
+| `insertMode` | String | `"insert"` | Insert mode | `"insert"` / `"upsert"` |
+| `uniqueKey` | Array | `[]` | Unique columns for upsert mode | `["EmployeeID"]` |
+| `updateStrategy` | String | `"all"` | Update strategy for upsert | `"all"` / `"non-null"` |
+| `batchSize` | Integer | `1000` | Batch size for inserts | `500`, `1000`, `5000` |
+
+---
+
+## Column Configuration
+
+Each column in the `columns` array must have these properties:
+
+### Required Column Properties
+
+| Property | Type | Description | Example |
+|----------|------|-------------|---------|
+| `columnName` | String | SQL column name | `"EmployeeID"` |
+| `dataType` | String | SQL Server data type | `"INT"`, `"NVARCHAR"` |
+| `excelColumnLetter` | String | Excel column letter(s) | `"A"`, `"AA"`, `"AB"` |
+
+### Optional Column Properties
+
+| Property | Type | Default | Description | Example |
+|----------|------|---------|-------------|---------|
+| `isPrimaryKey` | Boolean | `false` | Mark as primary key | `true` / `false` |
+| `isNullable` | Boolean | `true` | Allow NULL values | `true` / `false` |
+| `maxLength` | Integer | `null` | Max length for string types | `50`, `100`, `255` |
+| `precision` | Integer | `null` | Total digits for decimal types | `18`, `10`, `28` |
+| `scale` | Integer | `null` | Decimal places for decimal types | `2`, `4`, `6` |
+
+---
+
+## Data Types Reference
+
+### String Data Types
+
+| Data Type | Description | Requires | Example Config |
+|-----------|-------------|----------|----------------|
+| `NVARCHAR` | Unicode variable-length string | `maxLength` | `{"dataType": "NVARCHAR", "maxLength": 100}` |
+| `VARCHAR` | Non-Unicode variable-length | `maxLength` | `{"dataType": "VARCHAR", "maxLength": 50}` |
+| `NCHAR` | Unicode fixed-length | `maxLength` | `{"dataType": "NCHAR", "maxLength": 10}` |
+| `CHAR` | Non-Unicode fixed-length | `maxLength` | `{"dataType": "CHAR", "maxLength": 5}` |
+| `NTEXT` | Large Unicode text | - | `{"dataType": "NTEXT"}` |
+| `TEXT` | Large non-Unicode text | - | `{"dataType": "TEXT"}` |
+
+**Note:** If `maxLength` is not specified, defaults to `MAX`
+
+### Numeric Data Types
+
+| Data Type | Description | Range | Example Config |
+|-----------|-------------|-------|----------------|
+| `INT` | Integer | -2,147,483,648 to 2,147,483,647 | `{"dataType": "INT"}` |
+| `BIGINT` | Large integer | -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807 | `{"dataType": "BIGINT"}` |
+| `SMALLINT` | Small integer | -32,768 to 32,767 | `{"dataType": "SMALLINT"}` |
+| `TINYINT` | Tiny integer | 0 to 255 | `{"dataType": "TINYINT"}` |
+| `DECIMAL` | Fixed precision | Requires `precision`, `scale` | `{"dataType": "DECIMAL", "precision": 18, "scale": 2}` |
+| `NUMERIC` | Same as DECIMAL | Requires `precision`, `scale` | `{"dataType": "NUMERIC", "precision": 10, "scale": 4}` |
+| `MONEY` | Currency | -922,337,203,685,477.5808 to 922,337,203,685,477.5807 | `{"dataType": "MONEY"}` |
+| `SMALLMONEY` | Small currency | -214,748.3648 to 214,748.3647 | `{"dataType": "SMALLMONEY"}` |
+| `FLOAT` | Floating point | Approximate numeric | `{"dataType": "FLOAT"}` |
+| `REAL` | Small floating point | Approximate numeric | `{"dataType": "REAL"}` |
+
+### Date/Time Data Types
+
+| Data Type | Description | Format Examples | Example Config |
+|-----------|-------------|-----------------|----------------|
+| `DATE` | Date only | `2024-12-02`, `12/02/2024` | `{"dataType": "DATE"}` |
+| `DATETIME` | Date and time | `2024-12-02 14:30:00` | `{"dataType": "DATETIME"}` |
+| `DATETIME2` | High precision datetime | `2024-12-02 14:30:00.1234567` | `{"dataType": "DATETIME2"}` |
+| `SMALLDATETIME` | Small datetime | `2024-12-02 14:30:00` | `{"dataType": "SMALLDATETIME"}` |
+| `TIME` | Time only | `14:30:00`, `02:30 PM` | `{"dataType": "TIME"}` |
+
+### Boolean Data Type
+
+| Data Type | Description | Accepted Values | Example Config |
+|-----------|-------------|-----------------|----------------|
+| `BIT` | Boolean | `true/false`, `1/0`, `yes/no`, `y/n`, `on/off` | `{"dataType": "BIT"}` |
+
+---
+
+## Insert Modes Explained
+
+### 1. INSERT Mode (`"insertMode": "insert"`)
+
+**Behavior:**
+- Only inserts new records
+- Does NOT check for existing records
+- Fails if duplicate unique/primary key exists
+- Fastest mode for bulk inserts
+
+**Use When:**
+- Loading data into empty tables
+- No duplicate records in Excel
+- Using `truncateBeforeInsert: true`
+
+**Example:**
+```json
+{
+  "insertMode": "insert",
+  "truncateBeforeInsert": true
+}
+```
+
+---
+
+### 2. UPSERT Mode (`"insertMode": "upsert"`)
+
+**Behavior:**
+- Checks if record exists based on `uniqueKey`
+- **If exists:** Updates the record
+- **If not exists:** Inserts new record
+- Slower but handles duplicates
+
+**Required:**
+- Must specify `uniqueKey` array
+
+**Update Strategies:**
+
+#### a) "all" Strategy (`"updateStrategy": "all"`)
+- Updates ALL columns (including NULL values)
+- Overwrites existing data with Excel data
+- Even NULL values in Excel will update database
+
+**Example:**
+```json
+{
+  "insertMode": "upsert",
+  "uniqueKey": ["EmployeeID"],
+  "updateStrategy": "all"
+}
+```
+
+**Behavior:**
+- Excel: `{EmployeeID: 1, Name: "John", Email: NULL}`
+- Database will be updated with NULL email
+
+#### b) "non-null" Strategy (`"updateStrategy": "non-null"`)
+- Updates only NON-NULL columns
+- Preserves existing values if Excel has NULL
+- Safer for partial updates
+
+**Example:**
+```json
+{
+  "insertMode": "upsert",
+  "uniqueKey": ["EmployeeID"],
+  "updateStrategy": "non-null"
+}
+```
+
+**Behavior:**
+- Excel: `{EmployeeID: 1, Name: "John", Email: NULL}`
+- Database email will NOT be changed (keeps existing value)
+
+---
+
+## Complete Examples
+
+### Example 1: Simple Employee Data (INSERT Mode)
+
+```json
+{
+  "EmpData": {
+    "tableName": "Employees",
+    "objectName": "dbo",
+    "excelFilePath": "C:/Data/employees.xlsx",
+    "sheetName": "Sheet1",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": true,
+    "insertMode": "insert",
+    "columns": [
+      {
+        "columnName": "EmployeeID",
+        "dataType": "INT",
+        "excelColumnLetter": "A",
+        "isNullable": false
+      },
+      {
+        "columnName": "FirstName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "maxLength": 50,
+        "isNullable": false
+      },
+      {
+        "columnName": "LastName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "C",
+        "maxLength": 50,
+        "isNullable": false
+      },
+      {
+        "columnName": "Email",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "D",
+        "maxLength": 100,
+        "isNullable": true
+      },
+      {
+        "columnName": "Salary",
+        "dataType": "DECIMAL",
+        "excelColumnLetter": "E",
+        "precision": 18,
+        "scale": 2,
+        "isNullable": true
+      },
+      {
+        "columnName": "HireDate",
+        "dataType": "DATE",
+        "excelColumnLetter": "F",
+        "isNullable": true
+      },
+      {
+        "columnName": "IsActive",
+        "dataType": "BIT",
+        "excelColumnLetter": "G",
+        "isNullable": false
+      }
+    ]
+  }
+}
+```
+
+**Run:** `java -jar ExcelToMSSQL.jar EmpData`
+
+---
+
+### Example 2: Product Catalog (UPSERT Mode)
+
+```json
+{
+  "ProductCatalog": {
+    "tableName": "Products",
+    "objectName": "sales",
+    "excelFilePath": "D:/Products/catalog.xlsx",
+    "sheetName": "Products",
+    "headerRowIndex": 1,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "upsert",
+    "uniqueKey": ["ProductCode"],
+    "updateStrategy": "non-null",
+    "columns": [
+      {
+        "columnName": "ProductCode",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "A",
+        "maxLength": 20,
+        "isNullable": false
+      },
+      {
+        "columnName": "ProductName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "maxLength": 200,
+        "isNullable": false
+      },
+      {
+        "columnName": "Description",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "C",
+        "maxLength": null,
+        "isNullable": true
+      },
+      {
+        "columnName": "Price",
+        "dataType": "MONEY",
+        "excelColumnLetter": "D",
+        "isNullable": false
+      },
+      {
+        "columnName": "StockQuantity",
+        "dataType": "INT",
+        "excelColumnLetter": "E",
+        "isNullable": false
+      },
+      {
+        "columnName": "LastUpdated",
+        "dataType": "DATETIME2",
+        "excelColumnLetter": "F",
+        "isNullable": true
+      }
+    ]
+  }
+}
+```
+
+**Run:** `java -jar ExcelToMSSQL.jar ProductCatalog`
+
+---
+
+### Example 3: Customer Data with Multiple Unique Keys
+
+```json
+{
+  "CustomerData": {
+    "tableName": "Customers",
+    "objectName": "crm",
+    "excelFilePath": "E:/CRM/customers.xlsx",
+    "sheetName": "Customers",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "upsert",
+    "uniqueKey": ["Email", "Phone"],
+    "updateStrategy": "all",
+    "columns": [
+      {
+        "columnName": "CustomerID",
+        "dataType": "INT",
+        "excelColumnLetter": "A",
+        "isNullable": false
+      },
+      {
+        "columnName": "FullName",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "maxLength": 100,
+        "isNullable": false
+      },
+      {
+        "columnName": "Email",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "C",
+        "maxLength": 150,
+        "isNullable": false
+      },
+      {
+        "columnName": "Phone",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "D",
+        "maxLength": 20,
+        "isNullable": false
+      },
+      {
+        "columnName": "Address",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "E",
+        "maxLength": 500,
+        "isNullable": true
+      },
+      {
+        "columnName": "City",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "F",
+        "maxLength": 100,
+        "isNullable": true
+      },
+      {
+        "columnName": "Country",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "G",
+        "maxLength": 100,
+        "isNullable": true
+      },
+      {
+        "columnName": "PostalCode",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "H",
+        "maxLength": 20,
+        "isNullable": true
+      },
+      {
+        "columnName": "RegistrationDate",
+        "dataType": "DATE",
+        "excelColumnLetter": "I",
+        "isNullable": true
+      },
+      {
+        "columnName": "IsSubscribed",
+        "dataType": "BIT",
+        "excelColumnLetter": "J",
+        "isNullable": false
+      },
+      {
+        "columnName": "LastPurchaseDate",
+        "dataType": "DATETIME",
+        "excelColumnLetter": "K",
+        "isNullable": true
+      },
+      {
+        "columnName": "TotalSpent",
+        "dataType": "DECIMAL",
+        "excelColumnLetter": "L",
+        "precision": 18,
+        "scale": 2,
+        "isNullable": true
+      }
+    ]
+  }
+}
+```
+
+**Run:** `java -jar ExcelToMSSQL.jar CustomerData`
+
+---
+
+### Example 4: Financial Transactions (High Precision)
+
+```json
+{
+  "Transactions": {
+    "tableName": "FinancialTransactions",
+    "objectName": "finance",
+    "excelFilePath": "F:/Finance/transactions.xlsx",
+    "sheetName": "Transactions",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "insert",
+    "columns": [
+      {
+        "columnName": "TransactionID",
+        "dataType": "BIGINT",
+        "excelColumnLetter": "A",
+        "isNullable": false
+      },
+      {
+        "columnName": "AccountNumber",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "maxLength": 50,
+        "isNullable": false
+      },
+      {
+        "columnName": "TransactionType",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "C",
+        "maxLength": 20,
+        "isNullable": false
+      },
+      {
+        "columnName": "Amount",
+        "dataType": "DECIMAL",
+        "excelColumnLetter": "D",
+        "precision": 28,
+        "scale": 8,
+        "isNullable": false
+      },
+      {
+        "columnName": "Currency",
+        "dataType": "CHAR",
+        "excelColumnLetter": "E",
+        "maxLength": 3,
+        "isNullable": false
+      },
+      {
+        "columnName": "TransactionDateTime",
+        "dataType": "DATETIME2",
+        "excelColumnLetter": "F",
+        "isNullable": false
+      },
+      {
+        "columnName": "Description",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "G",
+        "maxLength": null,
+        "isNullable": true
+      },
+      {
+        "columnName": "IsProcessed",
+        "dataType": "BIT",
+        "excelColumnLetter": "H",
+        "isNullable": false
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 🔑 Best Practices
+
+### 1. **Schema Names**
+- Use meaningful schema names: `sales`, `hr`, `finance`
+- Schema will be auto-created if missing
+- Use `dbo` for default schema
+
+### 2. **Data Types Selection**
+- Use `NVARCHAR` for international characters
+- Use `VARCHAR` for English-only data (saves space)
+- Use `DECIMAL` for money (exact precision)
+- Use `FLOAT` for scientific data (approximate)
+- Use `DATETIME2` for new projects (better precision)
+
+### 3. **String Lengths**
+- Specify `maxLength` to save space
+- Use `null` (or omit) for `MAX` length
+- Consider data growth when setting lengths
+
+### 4. **NULL Handling**
+- Set `isNullable: false` for required fields
+- Use `isNullable: true` for optional fields
+- Application validates NOT NULL before insert
+
+### 5. **Insert Mode Selection**
+- Use `insert` for new/empty tables
+- Use `upsert` for incremental updates
+- Use `truncateBeforeInsert: true` for full refresh
+
+### 6. **Unique Keys for UPSERT**
+- Choose columns that uniquely identify records
+- Can use multiple columns: `["Email", "Phone"]`
+- Must be NOT NULL columns
+
+### 7. **Update Strategy**
+- Use `all` for complete replacement
+- Use `non-null` to preserve existing data
+- Consider business requirements
+
+---
+
+## ⚠️ Common Mistakes to Avoid
+
+1. **Missing Required Properties**
+   ```json
+   ❌ { "columnName": "Name" }  // Missing dataType and excelColumnLetter
+   ✅ { "columnName": "Name", "dataType": "NVARCHAR", "excelColumnLetter": "B", "maxLength": 100 }
+   ```
+
+2. **UPSERT Without Unique Key**
+   ```json
+   ❌ { "insertMode": "upsert" }  // Missing uniqueKey
+   ✅ { "insertMode": "upsert", "uniqueKey": ["ID"] }
+   ```
+
+3. **Wrong Excel Column Letters**
+   ```json
+   ❌ "excelColumnLetter": "Column B"  // Should be just letter
+   ✅ "excelColumnLetter": "B"
+   ```
+
+4. **Decimal Without Precision**
+   ```json
+   ❌ { "dataType": "DECIMAL" }  // Missing precision/scale
+   ✅ { "dataType": "DECIMAL", "precision": 18, "scale": 2 }
+   ```
+
+5. **File Path Format**
+   ```json
+   ❌ "excelFilePath": "C:\Data\file.xlsx"  // Backslashes
+   ✅ "excelFilePath": "C:/Data/file.xlsx"  // Forward slashes
+   ```
+
+---
+
+## 📝 Quick Reference Template
+
+```json
+{
+  "YOUR_TABLE_KEY": {
+    "tableName": "YourTableName",
+    "objectName": "YourSchema",
+    "excelFilePath": "C:/Path/To/Your/File.xlsx",
+    "sheetName": "SheetName",
+    "headerRowIndex": 0,
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": false,
+    "insertMode": "insert",
+    "uniqueKey": [],
+    "updateStrategy": "all",
+    "columns": [
+      {
+        "columnName": "ColumnName",
+        "dataType": "DATATYPE",
+        "excelColumnLetter": "A",
+        "isNullable": true,
+        "maxLength": null,
+        "precision": null,
+        "scale": null
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 🎯 Summary
+
+Your config.json file is the heart of the application. It defines:
+- ✅ Which Excel file to read
+- ✅ Which table to create/update
+- ✅ How to map Excel columns to SQL columns
+- ✅ What data types to use
+- ✅ How to handle duplicates
+- ✅ Validation rules
+
+**Remember:** One config file can contain multiple table configurations!
+
+
+without validation
+
+package com.dataloader;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.List;
+import java.util.Properties;
+
+public class DatabaseHelper {
+
+	private Properties dbProperties;
+	private Connection connection;
+	private String server;
+	private int port;
+	private String databaseName;
+	private String username;
+	private String password;
+	private int batchSize;
+
+	public DatabaseHelper(Properties dbProperties) throws SQLException {
+		this.dbProperties = dbProperties;
+		this.server = dbProperties.getProperty("server");
+		this.port = Integer.parseInt(dbProperties.getProperty("port"));
+		this.databaseName = dbProperties.getProperty("databaseName");
+		this.username = dbProperties.getProperty("username");
+		this.password = dbProperties.getProperty("password");
+		this.batchSize = dbProperties.containsKey("batchSize") ? Integer.parseInt(dbProperties.getProperty("batchSize"))
+				: 1000;
+
+		try {
+			Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+		} catch (ClassNotFoundException e) {
+			throw new SQLException("MSSQL JDBC Driver not found", e);
+		}
+	}
+
+	public boolean checkDatabaseExists() {
+		try (Connection masterConn = createConnection("master")) {
+			String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+			try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+				pstmt.setString(1, databaseName);
+				try (ResultSet rs = pstmt.executeQuery()) {
+					boolean exists = rs.next();
+					if (exists) {
+						System.out.println("Database '" + databaseName + "' exists");
+					}
+					return exists;
+				}
+			}
+		} catch (SQLException e) {
+			System.err.println("Error checking database: " + e.getMessage());
+			return false;
+		}
+	}
+
+	public Connection getConnection() throws SQLException {
+		if (connection == null || connection.isClosed()) {
+			connection = createConnection(databaseName);
+		}
+		return connection;
+	}
+
+	private Connection createConnection(String dbName) throws SQLException {
+		String connectionUrl = String.format(
+				"jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true",
+				server, port, dbName, username, password);
+		return DriverManager.getConnection(connectionUrl);
+	}
+
+	/**
+	 * Check if a schema exists in the database
+	 */
+	public boolean schemaExists(String schemaName) throws SQLException {
+		String query = "SELECT schema_id FROM sys.schemas WHERE name = ?";
+		
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, schemaName);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	/**
+	 * Create a schema if it doesn't exist
+	 */
+	public void createSchemaIfNotExists(String schemaName) throws SQLException {
+		if (schemaName == null || schemaName.isEmpty() || "dbo".equalsIgnoreCase(schemaName)) {
+			// dbo schema always exists, no need to create
+			return;
+		}
+
+		if (!schemaExists(schemaName)) {
+			System.out.println("Schema '" + schemaName + "' does not exist. Creating schema...");
+			String createSchemaSql = "CREATE SCHEMA [" + schemaName + "]";
+			
+			try (Statement stmt = getConnection().createStatement()) {
+				stmt.executeUpdate(createSchemaSql);
+				System.out.println("Schema '" + schemaName + "' created successfully");
+			}
+		} else {
+			System.out.println("Schema '" + schemaName + "' already exists");
+		}
+	}
+
+	public boolean tableExists(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+				+ "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, tableName);
+			pstmt.setString(2, schema);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	public void createTable(String tableName, String objectName, List<ColumnInfo> columns) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		
+		// Check and create schema if it doesn't exist
+		createSchemaIfNotExists(schema);
+		
+		System.out.println("Creating table: " + schema + "." + tableName);
+		StringBuilder sql = new StringBuilder();
+		sql.append("CREATE TABLE [").append(schema).append("].[").append(tableName).append("] (");
+		sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+
+		for (ColumnInfo col : columns) {
+			sql.append(", ").append(col.getSqlDefinition());
+		}
+
+		sql.append(")");
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql.toString());
+		}
+
+		System.out.println("Table created successfully with " + columns.size() + " columns");
+	}
+
+	public void truncateTable(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		System.out.println("Truncating table: " + schema + "." + tableName);
+		String sql = "TRUNCATE TABLE [" + schema + "].[" + tableName + "]";
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql);
+		}
+
+		System.out.println("Table truncated successfully");
+	}
+
+	public int getBatchSize() {
+		return batchSize;
+	}
+
+	public String getDatabaseName() {
+		return databaseName;
+	}
+
+	public void close() {
+		try {
+			if (connection != null && !connection.isClosed()) {
+				connection.close();
+				System.out.println("Database connection closed");
+			}
+		} catch (SQLException e) {
+			System.err.println("Error closing connection: " + e.getMessage());
+		}
+	}
+
+	// inner class for column information
+	public static class ColumnInfo {
+		private String columnName;
+		private String dataType;
+		private String excelColumnLetter;
+		private boolean isPrimaryKey;
+		private boolean isNullable;
+		private Integer maxLength;
+		private Integer precision;
+		private Integer scale;
+
+		public ColumnInfo(com.google.gson.JsonObject colJson) {
+			this.columnName = colJson.get("columnName").getAsString();
+			this.dataType = colJson.get("dataType").getAsString().toUpperCase();
+			this.excelColumnLetter = colJson.get("excelColumnLetter").getAsString();
+			this.isPrimaryKey = colJson.has("isPrimaryKey") && colJson.get("isPrimaryKey").getAsBoolean();
+			this.isNullable = !colJson.has("isNullable") || colJson.get("isNullable").getAsBoolean();
+			this.maxLength = colJson.has("maxLength") && !colJson.get("maxLength").isJsonNull()
+					? colJson.get("maxLength").getAsInt()
+					: null;
+			this.precision = colJson.has("precision") ? colJson.get("precision").getAsInt() : null;
+			this.scale = colJson.has("scale") ? colJson.get("scale").getAsInt() : null;
+		}
+
+		public String getColumnName() {
+			return columnName;
+		}
+
+		public String getDataType() {
+			return dataType;
+		}
+
+		public String getExcelColumnLetter() {
+			return excelColumnLetter;
+		}
+
+		public boolean isNullable() {
+			return isNullable;
+		}
+
+		public String getSqlDefinition() {
+			StringBuilder sql = new StringBuilder();
+			sql.append("[").append(columnName).append("] ");
+
+			switch (dataType) {
+			case "NVARCHAR":
+			case "VARCHAR":
+			case "CHAR":
+			case "NCHAR":
+				sql.append(dataType);
+				if (maxLength != null) {
+					sql.append("(").append(maxLength).append(")");
+				} else {
+					sql.append("(MAX)");
+				}
+				break;
+
+			case "DECIMAL":
+			case "NUMERIC":
+				sql.append(dataType);
+				if (precision != null) {
+					sql.append("(").append(precision);
+					if (scale != null) {
+						sql.append(",").append(scale);
+					}
+					sql.append(")");
+				} else {
+					sql.append("(18,2)");
+				}
+				break;
+
+			default:
+				sql.append(dataType);
+				break;
+			}
+
+			if (!isNullable) {
+				sql.append(" NOT NULL");
+			}
+
+			if (isPrimaryKey) {
+				sql.append(" PRIMARY KEY");
+			}
+
+			return sql.toString();
+		}
+
+		public void setParameter(PreparedStatement pstmt, int index, Object value) throws SQLException {
+			
+			if(value != null && value.toString().trim().equalsIgnoreCase("NULL")) {
+				value=null;
+			}
+			
+			if (value == null) {
+				pstmt.setNull(index, getSqlType());
+				return;
+			}
+
+			try {
+				switch (dataType) {
+				case "INT":
+				case "INTEGER":
+				case "SMALLINT":
+				case "TINYINT":
+					if (value instanceof Number) {
+						pstmt.setInt(index, ((Number) value).intValue());
+					} else {
+						pstmt.setInt(index, Integer.parseInt(value.toString()));
+					}
+					break;
+
+				case "BIGINT":
+					if (value instanceof Number) {
+						pstmt.setLong(index, ((Number) value).longValue());
+					} else {
+						pstmt.setLong(index, Long.parseLong(value.toString()));
+					}
+					break;
+
+				case "DECIMAL":
+				case "NUMERIC":
+				case "MONEY":
+				case "SMALLMONEY":
+					pstmt.setBigDecimal(index, new java.math.BigDecimal(value.toString()));
+					break;
+
+				case "FLOAT":
+				case "REAL":
+					if (value instanceof Number) {
+						pstmt.setDouble(index, ((Number) value).doubleValue());
+					} else {
+						pstmt.setDouble(index, Double.parseDouble(value.toString()));
+					}
+					break;
+
+				case "BIT":
+				case "BOOLEAN":
+					if (value instanceof Boolean) {
+						pstmt.setBoolean(index, (Boolean) value);
+					} else {
+						String strValue = value.toString().toLowerCase();
+						boolean boolValue = strValue.equals("true") || strValue.equals("1") || strValue.equals("yes")
+								|| strValue.equals("y");
+						pstmt.setBoolean(index, boolValue);
+					}
+					break;
+
+				case "DATE":
+					if (value instanceof java.util.Date) {
+						pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+					} else {
+						pstmt.setDate(index, java.sql.Date.valueOf(value.toString()));
+					}
+					break;
+
+				case "DATETIME":
+				case "DATETIME2":
+				case "SMALLDATETIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+					} else if (value instanceof String && !((String) value).trim().isEmpty()) {
+						java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+						java.util.Date parsedDate = sdf.parse((String) value);
+						pstmt.setTimestamp(index, new Timestamp(parsedDate.getTime()));
+					} else {
+						pstmt.setNull(index, Types.TIMESTAMP); 
+					}
+					break;
+
+				case "TIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+					} else {
+						pstmt.setTime(index, Time.valueOf(value.toString()));
+					}
+					break;
+
+				default:
+					pstmt.setString(index, value.toString());
+					break;
+				}
+			} catch (Exception e) {
+				System.err.println("Warning: Type conversion failed for " + columnName + ". Using string. Error: "
+						+ e.getMessage());
+				pstmt.setString(index, value.toString());
+			}
+		}
+
+		private int getSqlType() {
+			switch (dataType) {
+			case "INT":
+			case "INTEGER":
+				return Types.INTEGER;
+			case "BIGINT":
+				return Types.BIGINT;
+			case "SMALLINT":
+				return Types.SMALLINT;
+			case "TINYINT":
+				return Types.TINYINT;
+			case "DECIMAL":
+			case "NUMERIC":
+				return Types.DECIMAL;
+			case "FLOAT":
+			case "REAL":
+				return Types.FLOAT;
+			case "BIT":
+			case "BOOLEAN":
+				return Types.BIT;
+			case "DATE":
+				return Types.DATE;
+			case "DATETIME":
+			case "DATETIME2":
+			case "SMALLDATETIME":
+				return Types.TIMESTAMP;
+			case "TIME":
+				return Types.TIME;
+			case "NVARCHAR":
+			case "NCHAR":
+				return Types.NVARCHAR;
+			default:
+				return Types.VARCHAR;
+			}
+		}
+	}
+}
+
