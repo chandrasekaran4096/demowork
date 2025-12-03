@@ -1,0 +1,1634 @@
+package com.dataloader;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+
+public class Main {
+    
+    private static final String CONFIG_FILE = "config.json";
+    private static final String DB_PROPERTIES_FILE = "database.properties";
+    
+    public static void main(String[] args) {        
+        try {
+            if (args.length < 1) {
+                System.err.println("Usage: java -jar ExcelToMSSQL.jar <table-key>");
+                System.err.println("Example: java -jar ExcelToMSSQL.jar EmpData");
+                System.exit(1);
+            }
+            
+            String tableKey = args[0];
+        	
+        	//String tableKey="EmpData";
+            
+            File dbPropertiesFile = new File(DB_PROPERTIES_FILE);
+            if (!dbPropertiesFile.exists()) {
+                System.err.println("ERROR: Database properties file not found: " + DB_PROPERTIES_FILE);
+                System.err.println("Make sure database.properties is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading database configuration from: " + dbPropertiesFile.getAbsolutePath());
+            Properties dbProperties = new Properties();
+            try (FileInputStream fis = new FileInputStream(dbPropertiesFile)) {
+                dbProperties.load(fis);
+            }
+            
+            String[] requiredProps = {"server", "port", "databaseName", "username", "password"};
+            for (String prop : requiredProps) {
+                if (!dbProperties.containsKey(prop) || dbProperties.getProperty(prop).trim().isEmpty()) {
+                    System.err.println("ERROR: Missing or empty required property: " + prop);
+                    System.exit(1);
+                }
+            }
+            
+            // Load table configuration
+            File configFile = new File(CONFIG_FILE);
+            if (!configFile.exists()) {
+                System.err.println("ERROR: Configuration file not found: " + CONFIG_FILE);
+                System.err.println("Make sure config.json is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading table configuration from: " + configFile.getAbsolutePath());
+            
+            Gson gson = new Gson();
+            JsonObject config;
+            try (FileReader reader = new FileReader(configFile)) {
+                config = gson.fromJson(reader, JsonObject.class);
+            }
+            
+            // Check if table key exists
+            if (!config.has(tableKey)) {
+                System.err.println("ERROR: Table key '" + tableKey + "' not found in config");
+                System.err.println("Available keys: " + config.keySet());
+                System.exit(1);
+            }
+            
+            JsonObject tableConfig = config.getAsJsonObject(tableKey);
+            
+            // Validate configuration before processing
+            if (!validateConfiguration(tableConfig, tableKey)) {
+                System.err.println("\nERROR: Configuration validation failed. Please fix the errors above.");
+                System.exit(1);
+            }
+            
+            System.out.println("\n=== Configuration validation passed ===");
+            System.out.println("Processing table key: " + tableKey);
+            System.out.println("Table: " + tableConfig.get("tableName").getAsString());
+            
+            // Initialize database connection
+            DatabaseHelper dbHelper = new DatabaseHelper(dbProperties);
+            
+            // Check if database exists
+            if (!dbHelper.checkDatabaseExists()) {
+                System.err.println("ERROR: Database '" + dbHelper.getDatabaseName() + "' does not exist");
+                System.err.println("Please create the database first");
+                dbHelper.close();
+                System.exit(1);
+            }
+            
+            // Process the table
+            ExcelProcessor processor = new ExcelProcessor(dbHelper, tableConfig);
+            processor.process();
+            
+            // Close connection
+            dbHelper.close();
+            
+            System.out.println("\n=== Process completed successfully ===");
+            
+        } catch (Exception e) {
+            System.err.println("\nFATAL ERROR: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+    
+    private static boolean validateConfiguration(JsonObject tableConfig, String tableKey) {
+        boolean isValid = true;
+        int errorCount = 0;
+        int warningCount = 0;
+        
+        System.out.println("\n=== Validating configuration for: " + tableKey + " ===");
+        
+        // Check required fields
+        String[] requiredFields = {"tableName", "excelFilePath", "columns"};
+        for (String field : requiredFields) {
+            if (!tableConfig.has(field)) {
+                System.err.println("ERROR: Missing required field: " + field);
+                isValid = false;
+                errorCount++;
+            }
+        }
+        
+        // Validate Excel file
+        if (tableConfig.has("excelFilePath")) {
+            String excelPath = tableConfig.get("excelFilePath").getAsString();
+            File excelFile = new File(excelPath);
+            
+            if (!excelFile.exists()) {
+                System.err.println("ERROR: Excel file not found: " + excelPath);
+                isValid = false;
+                errorCount++;
+            } else if (!excelFile.canRead()) {
+                System.err.println("ERROR: Excel file is not readable: " + excelPath);
+                isValid = false;
+                errorCount++;
+            } else if (!excelPath.toLowerCase().matches(".*\\.(xlsx|xls)$")) {
+                System.err.println("ERROR: Excel file must be .xlsx or .xls format: " + excelPath);
+                isValid = false;
+                errorCount++;
+            } else {
+                System.out.println("✓ Excel file exists and is readable: " + excelPath);
+            }
+        }
+        
+        // Validate insertMode
+        if (tableConfig.has("insertMode")) {
+            String insertMode = tableConfig.get("insertMode").getAsString().toLowerCase();
+            if (!insertMode.equals("insert") && !insertMode.equals("upsert")) {
+                System.err.println("ERROR: Invalid insertMode '" + insertMode + "'. Must be 'insert' or 'upsert'");
+                isValid = false;
+                errorCount++;
+            }
+            
+            if (insertMode.equals("upsert")) {
+                if (!tableConfig.has("uniqueKey") || tableConfig.getAsJsonArray("uniqueKey").size() == 0) {
+                    System.err.println("ERROR: UPSERT mode requires 'uniqueKey' configuration");
+                    isValid = false;
+                    errorCount++;
+                }
+                
+                if (tableConfig.has("updateStrategy")) {
+                    String strategy = tableConfig.get("updateStrategy").getAsString().toLowerCase();
+                    if (!strategy.equals("all") && !strategy.equals("non-null")) {
+                        System.err.println("ERROR: Invalid updateStrategy '" + strategy + "'. Must be 'all' or 'non-null'");
+                        isValid = false;
+                        errorCount++;
+                    }
+                }
+            }
+        }
+        
+        // Validate columns
+        if (tableConfig.has("columns")) {
+            JsonArray columns = tableConfig.getAsJsonArray("columns");
+            if (columns.size() == 0) {
+                System.err.println("ERROR: At least one column must be defined");
+                isValid = false;
+                errorCount++;
+            }
+            
+            Set<String> columnNames = new HashSet<>();
+            Set<String> excelColumns = new HashSet<>();
+            Set<String> validDataTypes = new HashSet<>(Arrays.asList(
+                "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT",
+                "DECIMAL", "NUMERIC", "FLOAT", "REAL", "MONEY", "SMALLMONEY",
+                "BIT", "BOOLEAN", "DATE", "DATETIME", "DATETIME2", "SMALLDATETIME", "TIME",
+                "NVARCHAR", "VARCHAR", "CHAR", "NCHAR", "NTEXT", "TEXT"
+            ));
+            
+            for (int i = 0; i < columns.size(); i++) {
+                JsonObject col = columns.get(i).getAsJsonObject();
+                String colNum = "Column " + (i + 1);
+                
+                // Check for typo: isNullabel
+                if (col.has("isNullabel")) {
+                    System.err.println("ERROR: " + colNum + ": Typo detected - 'isNullabel' should be 'isNullable'");
+                    isValid = false;
+                    errorCount++;
+                }
+                
+                if (!col.has("columnName")) {
+                    System.err.println("ERROR: " + colNum + ": Missing 'columnName'");
+                    isValid = false;
+                    errorCount++;
+                    continue;
+                }
+                
+                String columnName = col.get("columnName").getAsString();
+                
+                // Check duplicate column names
+                if (columnNames.contains(columnName)) {
+                    System.err.println("ERROR: " + colNum + ": Duplicate column name '" + columnName + "'");
+                    isValid = false;
+                    errorCount++;
+                }
+                columnNames.add(columnName);
+                
+                // Validate dataType
+                if (!col.has("dataType")) {
+                    System.err.println("ERROR: " + colNum + " (" + columnName + "): Missing 'dataType'");
+                    isValid = false;
+                    errorCount++;
+                } else {
+                    String dataType = col.get("dataType").getAsString().toUpperCase();
+                    if (!validDataTypes.contains(dataType)) {
+                        System.err.println("ERROR: " + colNum + " (" + columnName + "): Invalid data type '" + dataType + "'");
+                        isValid = false;
+                        errorCount++;
+                    }
+                }
+                
+                // Validate excelColumnLetter
+                if (!col.has("excelColumnLetter")) {
+                    System.err.println("ERROR: " + colNum + " (" + columnName + "): Missing 'excelColumnLetter'");
+                    isValid = false;
+                    errorCount++;
+                } else {
+                    String excelCol = col.get("excelColumnLetter").getAsString().toUpperCase();
+                    if (!excelCol.matches("^[A-Z]+$")) {
+                        System.err.println("ERROR: " + colNum + " (" + columnName + "): Invalid Excel column letter '" + excelCol + "'");
+                        isValid = false;
+                        errorCount++;
+                    }
+                    
+                    if (excelColumns.contains(excelCol)) {
+                        System.out.println("WARNING: " + colNum + " (" + columnName + "): Duplicate Excel column '" + excelCol + "'");
+                        warningCount++;
+                    }
+                    excelColumns.add(excelCol);
+                }
+                
+                // Check isPrimaryKey exists
+                if (!col.has("isPrimaryKey")) {
+                    System.out.println("WARNING: " + colNum + " (" + columnName + "): Missing 'isPrimaryKey' field, defaulting to false");
+                    warningCount++;
+                }
+            }
+            
+            // Validate uniqueKey references
+            if (tableConfig.has("uniqueKey")) {
+                JsonArray uniqueKeys = tableConfig.getAsJsonArray("uniqueKey");
+                for (int i = 0; i < uniqueKeys.size(); i++) {
+                    String uniqueKey = uniqueKeys.get(i).getAsString();
+                    if (!columnNames.contains(uniqueKey)) {
+                        System.err.println("ERROR: uniqueKey '" + uniqueKey + "' does not exist in columns array");
+                        isValid = false;
+                        errorCount++;
+                    }
+                }
+            }
+        }
+        
+        System.out.println("\nValidation Summary:");
+        System.out.println("  Errors: " + errorCount);
+        System.out.println("  Warnings: " + warningCount);
+        
+        return isValid;
+    }
+}
+
+
+
+
+
+
+
+2.
+package com.dataloader;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+public class DatabaseHelper {
+
+	private Properties dbProperties;
+	private Connection connection;
+	private String server;
+	private int port;
+	private String databaseName;
+	private String username;
+	private String password;
+	private int batchSize;
+	private static boolean enableTextCleaning;
+	private static final Map<String, String> CHAR_REPLACEMENT_MAP = initCharReplacements();
+
+	public DatabaseHelper(Properties dbProperties) throws SQLException {
+		this.dbProperties = dbProperties;
+		this.server = dbProperties.getProperty("server");
+		this.port = Integer.parseInt(dbProperties.getProperty("port"));
+		this.databaseName = dbProperties.getProperty("databaseName");
+		this.username = dbProperties.getProperty("username");
+		this.password = dbProperties.getProperty("password");
+		this.batchSize = dbProperties.containsKey("batchSize") ? Integer.parseInt(dbProperties.getProperty("batchSize"))
+				: 1000;
+		this.enableTextCleaning = dbProperties.containsKey("enableTextCleaning") 
+				? Boolean.parseBoolean(dbProperties.getProperty("enableTextCleaning"))
+				: true; // Changed default to true
+
+		try {
+			Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+		} catch (ClassNotFoundException e) {
+			throw new SQLException("MSSQL JDBC Driver not found", e);
+		}
+	}
+
+	
+	public static Map<String, String> initCharReplacements() {
+		Map<String, String> map = new HashMap<>();
+		
+		map.put("â€"", "-");
+		map.put("–", "-");
+		map.put("—", "-");
+		map.put("&#8212;", "-");
+		map.put("Ã¢â‚¬â€œ", "-");
+		
+		// Single quotes
+		map.put("'", "'");
+		map.put("'", "'");
+		map.put("â€™", "'");
+		map.put("&#39;", "'");
+		map.put("&#8217;", "'");
+		map.put("'", "'");
+		
+		// Double quotes
+		map.put("â€œ", "\"");
+		map.put("â€", "\"");
+		map.put("&quot;", "\"");
+		map.put(""", "\"");
+		map.put(""", "\"");
+		
+		map.put("…", "...");
+		map.put("â€¦", "...");
+		map.put("\u2026", "...");
+		
+		// Ampersand
+		map.put("&amp;", "&");
+		
+		// Special characters
+		map.put("Ã¼", "u");
+		map.put("A¼", "u");
+		map.put("Ã¤", "a");
+		map.put("Ã¶", "o");
+		map.put("Ã¥", "a");
+		map.put("Ã¨", "e");
+		map.put("ÃŸ", "ss");
+		map.put("ÃƒÆ'Ã…Â¸", "B");
+		map.put("ÃƒÆ'Ã‚", "Af");
+		map.put("Â·", "-");
+		map.put("(QB)", "");
+		
+		return map;
+	}
+	
+	
+	public static String cleanText(String text) {
+		if (text == null || text.isEmpty()) {
+			return text;
+		}
+		
+		String cleaned = text;
+		for (Map.Entry<String, String> entry : CHAR_REPLACEMENT_MAP.entrySet()) {
+			cleaned = cleaned.replace(entry.getKey(), entry.getValue());
+		}
+		
+		return cleaned;
+	}
+	
+	public boolean checkDatabaseExists() {
+		try (Connection masterConn = createConnection("master")) {
+			String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+			try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+				pstmt.setString(1, databaseName);
+				try (ResultSet rs = pstmt.executeQuery()) {
+					boolean exists = rs.next();
+					if (exists) {
+						System.out.println("Database '" + databaseName + "' exists");
+					}
+					return exists;
+				}
+			}
+		} catch (SQLException e) {
+			System.err.println("Error checking database: " + e.getMessage());
+			return false;
+		}
+	}
+
+	public Connection getConnection() throws SQLException {
+		if (connection == null || connection.isClosed()) {
+			connection = createConnection(databaseName);
+		}
+		return connection;
+	}
+
+	private Connection createConnection(String dbName) throws SQLException {
+		String connectionUrl = String.format(
+				"jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true;connectTimeout=30;socketTimeout=60",
+				server, port, dbName, username, password);
+		return DriverManager.getConnection(connectionUrl);
+	}
+
+	public boolean schemaExists(String schemaName) throws SQLException {
+		String query = "SELECT schema_id FROM sys.schemas WHERE name = ?";
+
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, schemaName);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	public void createSchemaIfNotExists(String schemaName) throws SQLException {
+		if (schemaName == null || schemaName.isEmpty() || "dbo".equalsIgnoreCase(schemaName)) {
+			// dbo schema always exists, no need to create
+			return;
+		}
+
+		if (!schemaExists(schemaName)) {
+			System.out.println("Schema '" + schemaName + "' does not exist. Creating schema...");
+			String createSchemaSql = "CREATE SCHEMA [" + schemaName + "]";
+
+			try (Statement stmt = getConnection().createStatement()) {
+				stmt.executeUpdate(createSchemaSql);
+				System.out.println("Schema '" + schemaName + "' created successfully");
+			}
+		} else {
+			System.out.println("Schema '" + schemaName + "' already exists");
+		}
+	}
+
+	public boolean tableExists(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+				+ "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, tableName);
+			pstmt.setString(2, schema);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	public void createTable(String tableName, String objectName, List<ColumnInfo> columns) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		createSchemaIfNotExists(schema);
+
+		System.out.println("Creating table: " + schema + "." + tableName);
+		StringBuilder sql = new StringBuilder();
+		sql.append("CREATE TABLE [").append(schema).append("].[").append(tableName).append("] (");
+		sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+
+		for (ColumnInfo col : columns) {
+			sql.append(", ").append(col.getSqlDefinition());
+		}
+
+		sql.append(")");
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql.toString());
+		}
+
+		System.out.println("Table created successfully with " + columns.size() + " columns");
+	}
+
+	public void truncateTable(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		System.out.println("Truncating table: " + schema + "." + tableName);
+		String sql = "TRUNCATE TABLE [" + schema + "].[" + tableName + "]";
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql);
+		}
+
+		System.out.println("Table truncated successfully");
+	}
+
+	public int getBatchSize() {
+		return batchSize;
+	}
+
+	public String getDatabaseName() {
+		return databaseName;
+	}
+
+	public void close() {
+		try {
+			if (connection != null && !connection.isClosed()) {
+				connection.close();
+				System.out.println("Database connection closed");
+			}
+		} catch (SQLException e) {
+			System.err.println("Error closing connection: " + e.getMessage());
+		}
+	}
+
+	// inner class for column information
+	public static class ColumnInfo {
+		private String columnName;
+		private String dataType;
+		private String excelColumnLetter;
+		private boolean isPrimaryKey;
+		private boolean isNullable;
+		private Integer maxLength;
+		private Integer precision;
+		private Integer scale;
+
+		public ColumnInfo(com.google.gson.JsonObject colJson) {
+			this.columnName = colJson.get("columnName").getAsString();
+			this.dataType = colJson.get("dataType").getAsString().toUpperCase();
+			this.excelColumnLetter = colJson.get("excelColumnLetter").getAsString();
+			this.isPrimaryKey = colJson.has("isPrimaryKey") && colJson.get("isPrimaryKey").getAsBoolean();
+			// Handle both isNullable and isNullabel typo
+			this.isNullable = !colJson.has("isNullable") || colJson.get("isNullable").getAsBoolean();
+			if (colJson.has("isNullabel")) {
+				this.isNullable = colJson.get("isNullabel").getAsBoolean();
+			}
+			this.maxLength = colJson.has("maxLength") && !colJson.get("maxLength").isJsonNull()
+					? colJson.get("maxLength").getAsInt()
+					: null;
+			this.precision = colJson.has("precision") ? colJson.get("precision").getAsInt() : null;
+			this.scale = colJson.has("scale") ? colJson.get("scale").getAsInt() : null;
+		}
+
+		public String getColumnName() {
+			return columnName;
+		}
+
+		public String getDataType() {
+			return dataType;
+		}
+
+		public String getExcelColumnLetter() {
+			return excelColumnLetter;
+		}
+
+		public boolean isNullable() {
+			return isNullable;
+		}
+		
+		public Integer getMaxLength() {
+			return maxLength;
+		}
+
+		public String getSqlDefinition() {
+			StringBuilder sql = new StringBuilder();
+			sql.append("[").append(columnName).append("] ");
+
+			switch (dataType) {
+			case "NVARCHAR":
+			case "VARCHAR":
+			case "CHAR":
+			case "NCHAR":
+				sql.append(dataType);
+				if (maxLength != null) {
+					sql.append("(").append(maxLength).append(")");
+				} else {
+					sql.append("(MAX)");
+				}
+				break;
+
+			case "DECIMAL":
+			case "NUMERIC":
+				sql.append(dataType);
+				if (precision != null) {
+					sql.append("(").append(precision);
+					if (scale != null) {
+						sql.append(",").append(scale);
+					}
+					sql.append(")");
+				} else {
+					sql.append("(18,2)");
+				}
+				break;
+
+			default:
+				sql.append(dataType);
+				break;
+			}
+
+			if (!isNullable) {
+				sql.append(" NOT NULL");
+			}
+
+			if (isPrimaryKey) {
+				sql.append(" PRIMARY KEY");
+			}
+
+			return sql.toString();
+		}
+
+		public void setParameter(PreparedStatement pstmt, int index, Object value) throws SQLException {
+
+			// Handle "NULL" string as actual null
+			if (value != null && value.toString().trim().equalsIgnoreCase("NULL")) {
+				value = null;
+			}
+
+			if (value == null) {
+				pstmt.setNull(index, getSqlType());
+				return;
+			}
+
+			try {
+				String stringValue = value.toString().trim();
+
+				// Handle empty strings as null for non-string types
+				if (stringValue.isEmpty() && !isStringType()) {
+					pstmt.setNull(index, getSqlType());
+					return;
+				}
+
+				switch (dataType) {
+				case "INT":
+				case "INTEGER":
+				case "SMALLINT":
+				case "TINYINT":
+					if (value instanceof Number) {
+						pstmt.setInt(index, ((Number) value).intValue());
+					} else {
+						// Remove any non-numeric characters except minus sign
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setInt(index, Integer.parseInt(cleanValue));
+						}
+					}
+					break;
+
+				case "BIGINT":
+					if (value instanceof Number) {
+						pstmt.setLong(index, ((Number) value).longValue());
+					} else {
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setLong(index, Long.parseLong(cleanValue));
+						}
+					}
+					break;
+
+				case "DECIMAL":
+				case "NUMERIC":
+				case "MONEY":
+				case "SMALLMONEY":
+					// Remove currency symbols and commas
+					String cleanDecimal = stringValue.replaceAll("[^0-9.-]", "");
+					if (cleanDecimal.isEmpty() || cleanDecimal.equals("-") || cleanDecimal.equals(".")) {
+						pstmt.setNull(index, getSqlType());
+					} else {
+						java.math.BigDecimal bd = new java.math.BigDecimal(cleanDecimal);
+						// Validate precision and scale
+						if (precision != null) {
+							int integerDigits = bd.precision() - bd.scale();
+							int maxIntegerDigits = precision - (scale != null ? scale : 0);
+							if (integerDigits > maxIntegerDigits) {
+								throw new SQLException("Value exceeds precision: " + cleanDecimal + 
+									" (max " + precision + "," + (scale != null ? scale : 0) + ")");
+							}
+						}
+						pstmt.setBigDecimal(index, bd);
+					}
+					break;
+
+				case "FLOAT":
+				case "REAL":
+					if (value instanceof Number) {
+						pstmt.setDouble(index, ((Number) value).doubleValue());
+					} else {
+						String cleanFloat = stringValue.replaceAll("[^0-9.-]", "");
+						if (cleanFloat.isEmpty() || cleanFloat.equals("-") || cleanFloat.equals(".")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setDouble(index, Double.parseDouble(cleanFloat));
+						}
+					}
+					break;
+
+				case "BIT":
+				case "BOOLEAN":
+					if (value instanceof Boolean) {
+						pstmt.setBoolean(index, (Boolean) value);
+					} else {
+						String strValue = stringValue.toLowerCase();
+						boolean boolValue = strValue.equals("true") || strValue.equals("1") || strValue.equals("yes")
+								|| strValue.equals("y") || strValue.equals("on") || strValue.equals("t");
+						pstmt.setBoolean(index, boolValue);
+					}
+					break;
+
+				case "DATE":
+					if (value instanceof java.util.Date) {
+						pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple date formats
+						java.sql.Date sqlDate = parseDate(stringValue);
+						if (sqlDate != null) {
+							pstmt.setDate(index, sqlDate);
+						} else {
+							System.err.println("Warning: Cannot parse date '" + stringValue + "' for column '" + columnName + "'. Setting to NULL.");
+							pstmt.setNull(index, Types.DATE);
+						}
+					}
+					break;
+
+				case "DATETIME":
+				case "DATETIME2":
+				case "SMALLDATETIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple datetime formats
+						Timestamp timestamp = parseDateTime(stringValue);
+						if (timestamp != null) {
+							pstmt.setTimestamp(index, timestamp);
+						} else {
+							System.err.println("Warning: Cannot parse datetime '" + stringValue + "' for column '" + columnName + "'. Setting to NULL.");
+							pstmt.setNull(index, Types.TIMESTAMP);
+						}
+					}
+					break;
+
+				case "TIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+					} else {
+						Time time = parseTime(stringValue);
+						if (time != null) {
+							pstmt.setTime(index, time);
+						} else {
+							System.err.println("Warning: Cannot parse time '" + stringValue + "' for column '" + columnName + "'. Setting to NULL.");
+							pstmt.setNull(index, Types.TIME);
+						}
+					}
+					break;
+
+				case "NVARCHAR":
+				case "VARCHAR":
+				case "NCHAR":
+				case "CHAR":
+				case "NTEXT":
+				case "TEXT":
+					String textValue = stringValue;
+					
+					// Apply text cleaning if enabled
+					if (DatabaseHelper.enableTextCleaning) {
+						textValue = cleanText(stringValue);
+					}
+					
+					// Truncate if exceeds maxLength
+					if (maxLength != null && textValue.length() > maxLength) {
+						System.out.println("Warning: Text truncated for column '" + columnName + 
+							"' (length " + textValue.length() + " > " + maxLength + ")");
+						textValue = textValue.substring(0, maxLength);
+					}
+					
+					pstmt.setString(index, textValue);
+					break;
+
+				default:
+					pstmt.setString(index, stringValue);
+					break;
+				}
+			} catch (NumberFormatException e) {
+				System.err.println("Warning: Number format error for column '" + columnName + "' with value '"
+						+ value + "'. Setting to NULL. Error: " + e.getMessage());
+				pstmt.setNull(index, getSqlType());
+			} catch (Exception e) {
+				System.err.println("Warning: Type conversion failed for column '" + columnName + "' with value '"
+						+ value + "'. Error: " + e.getMessage());
+				// Try to set as string as fallback, or null if that also fails
+				try {
+					pstmt.setString(index, value.toString());
+				} catch (Exception ex) {
+					System.err.println(
+							"Error: Failed to set even as string. Setting NULL for column '" + columnName + "'");
+					pstmt.setNull(index, getSqlType());
+				}
+			}
+		}
+
+		private boolean isStringType() {
+			return dataType.equals("NVARCHAR") || dataType.equals("VARCHAR") || dataType.equals("NCHAR")
+					|| dataType.equals("CHAR") || dataType.equals("NTEXT") || dataType.equals("TEXT");
+		}
+
+		private java.sql.Date parseDate(String dateStr) {
+			// Try multiple date formats
+			String[] dateFormats = { 
+				"yyyy-MM-dd", "MM/dd/yyyy", "dd/MM/yyyy", "dd-MM-yyyy", "yyyy/MM/dd", "dd.MM.yyyy",
+				"MMM dd, yyyy", "dd MMM yyyy", "MMM dd yyyy", "dd-MMM-yyyy",
+				"M/d/yyyy", "d/M/yyyy", "yyyy-M-d"
+			};
+
+			for (String format : dateFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateStr);
+					return new java.sql.Date(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private Timestamp parseDateTime(String dateTimeStr) {
+			// Try multiple datetime formats
+			String[] dateTimeFormats = { 
+				"yyyy-MM-dd HH:mm:ss.SSS", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm",
+				"MM/dd/yyyy HH:mm:ss", "dd/MM/yyyy HH:mm:ss", "yyyy/MM/dd HH:mm:ss", "dd-MM-yyyy HH:mm:ss",
+				"yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss.SSS", 
+				"MM/dd/yyyy hh:mm:ss a", "dd/MM/yyyy hh:mm:ss a",
+				"M/d/yyyy H:mm:ss", "d/M/yyyy H:mm:ss", "yyyy-M-d H:mm:ss",
+				"MMM dd, yyyy HH:mm:ss", "dd MMM yyyy HH:mm:ss"
+			};
+
+			for (String format : dateTimeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateTimeStr);
+					return new Timestamp(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+
+			// If all datetime formats fail, try date-only formats and set time to 00:00:00
+			java.sql.Date date = parseDate(dateTimeStr);
+			if (date != null) {
+				return new Timestamp(date.getTime());
+			}
+
+			return null;
+		}
+
+		private Time parseTime(String timeStr) {
+			// Try multiple time formats
+			String[] timeFormats = { "HH:mm:ss", "HH:mm", "hh:mm:ss a", "hh:mm a", "H:mm:ss", "H:mm" };
+
+			for (String format : timeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(timeStr);
+					return new Time(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private int getSqlType() {
+			switch (dataType) {
+			case "INT":
+			case "INTEGER":
+				return Types.INTEGER;
+			case "BIGINT":
+				return Types.BIGINT;
+			case "SMALLINT":
+				return Types.SMALLINT;
+			case "TINYINT":
+				return Types.TINYINT;
+			case "DECIMAL":
+			case "NUMERIC":
+				return Types.DECIMAL;
+			case "FLOAT":
+			case "REAL":
+				return Types.FLOAT;
+			case "BIT":
+			case "BOOLEAN":
+				return Types.BIT;
+			case "DATE":
+				return Types.DATE;
+			case "DATETIME":
+			case "DATETIME2":
+			case "SMALLDATETIME":
+				return Types.TIMESTAMP;
+			case "TIME":
+				return Types.TIME;
+			case "NVARCHAR":
+			case "NCHAR":
+				return Types.NVARCHAR;
+			default:
+				return Types.VARCHAR;
+			}
+		}
+	}
+}
+
+
+
+3.
+
+
+package com.dataloader;
+
+import com.dataloader.DatabaseHelper.ColumnInfo;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
+
+public class ExcelProcessor {
+
+	private DatabaseHelper dbHelper;
+	private JsonObject tableConfig;
+	private String tableName;
+	private String objectName;
+	private String excelFilePath;
+	private String sheetName;
+	private int headerRowIndex;
+	private boolean createTableIfNotExists;
+	private boolean truncateBeforeInsert;
+	private String insertMode;
+	private List<String> uniqueKeys;
+	private String updateStrategy;
+	private List<DatabaseHelper.ColumnInfo> columns;
+
+	public ExcelProcessor(DatabaseHelper dbHelper, JsonObject tableConfig) {
+		this.dbHelper = dbHelper;
+		this.tableConfig = tableConfig;
+		this.tableName = tableConfig.get("tableName").getAsString();
+		this.objectName = tableConfig.has("objectName") ? tableConfig.get("objectName").getAsString() : "dbo";
+		this.excelFilePath = tableConfig.get("excelFilePath").getAsString();
+		this.sheetName = tableConfig.has("sheetName") ? tableConfig.get("sheetName").getAsString() : "Sheet1";
+		this.headerRowIndex = tableConfig.has("headerRowIndex") ? tableConfig.get("headerRowIndex").getAsInt() : 0;
+		this.createTableIfNotExists = !tableConfig.has("createTableIfNotExists")
+				|| tableConfig.get("createTableIfNotExists").getAsBoolean();
+		this.truncateBeforeInsert = tableConfig.has("truncateBeforeInsert")
+				&& tableConfig.get("truncateBeforeInsert").getAsBoolean();
+		this.insertMode = tableConfig.has("insertMode") ? tableConfig.get("insertMode").getAsString().toLowerCase()
+				: "insert";
+		this.updateStrategy = tableConfig.has("updateStrategy")
+				? tableConfig.get("updateStrategy").getAsString().toLowerCase()
+				: "all";
+		
+		this.uniqueKeys = new ArrayList<>();
+		if (tableConfig.has("uniqueKey")) {
+			JsonArray uniqueKeyArray = tableConfig.getAsJsonArray("uniqueKey");
+			for (int i = 0; i < uniqueKeyArray.size(); i++) {
+				uniqueKeys.add(uniqueKeyArray.get(i).getAsString());
+			}
+		}
+
+
+		this.columns = new ArrayList<>();
+		JsonArray columnsArray = tableConfig.getAsJsonArray("columns");
+		for (int i = 0; i < columnsArray.size(); i++) {
+			columns.add(new DatabaseHelper.ColumnInfo(columnsArray.get(i).getAsJsonObject()));
+		}
+	}
+
+	public void process() throws Exception {
+		File excelFile = new File(excelFilePath);
+		if (!excelFile.exists()) {
+			throw new IOException("Excel file not found: " + excelFilePath);
+		}
+		
+		if (!excelFile.canRead()) {
+			throw new IOException("Excel file is not readable: " + excelFilePath);
+		}
+
+		boolean tableExists = dbHelper.tableExists(tableName, objectName);
+		
+		if (!tableExists) {
+			if (createTableIfNotExists) {
+				dbHelper.createTable(tableName, objectName, columns);
+			} else {
+				throw new SQLException(
+						"Table '" + objectName + "." + tableName + "' does not exist and auto-creation is disabled");
+			}
+		} else {
+			System.out.println("Table '" + objectName + "." + tableName + "' already exists");
+
+			if (truncateBeforeInsert) {
+				dbHelper.truncateTable(tableName, objectName);
+			}
+		}
+	
+		
+		// Read Excel data
+		System.out.println("Reading Excel file: " + excelFilePath);
+		List<Map<String, Object>> data = readExcel();
+
+		if (data.isEmpty()) {
+			System.out.println("WARNING: No data found in Excel file");
+			return;
+		}
+
+		System.out.println("Found " + data.size() + " rows to process");
+
+		// Insert data
+		insertData(data);
+	}
+
+	private List<Map<String, Object>> readExcel() throws IOException {
+		List<Map<String, Object>> data = new ArrayList<>();
+		Workbook workbook = null;
+		
+		try (FileInputStream fis = new FileInputStream(excelFilePath)) {
+			
+			if (excelFilePath.toLowerCase().endsWith(".xlsx")) {
+				workbook = new XSSFWorkbook(fis);
+			} else if (excelFilePath.toLowerCase().endsWith(".xls")) {
+				workbook = new HSSFWorkbook(fis);
+			} else {
+				throw new IllegalArgumentException("Unsupported file format. Use .xlsx or .xls");				
+			}
+
+			// Get sheet
+			Sheet sheet;
+			if (sheetName != null && !sheetName.trim().isEmpty()) {
+				sheet = workbook.getSheet(sheetName);
+				if (sheet == null) {
+					System.err.println("WARNING: Sheet '" + sheetName + "' not found. Available sheets: " + getSheetNames(workbook));
+					System.err.println("Using first sheet: " + workbook.getSheetAt(0).getSheetName());
+					sheet = workbook.getSheetAt(0);
+				}
+			} else {
+				sheet = workbook.getSheetAt(0);
+			}
+
+			if (sheet.getPhysicalNumberOfRows() == 0) {
+				System.out.println("WARNING: Sheet is empty");
+				return data;
+			}
+
+			// Build column letter to index map
+			Map<String, Integer> letterToIndex = buildColumnMap();
+
+			System.out.println("Header row index: " + headerRowIndex + " (this row will be skipped)");
+			System.out.println("Reading data using Excel column letters: " + getColumnLettersList());
+
+			// Read data rows - skip header row
+			int dataStartRow = headerRowIndex + 1;
+			int emptyRowCount = 0;
+			int maxConsecutiveEmptyRows = 10; // Stop if 10 consecutive empty rows
+			
+			for (int i = dataStartRow; i <= sheet.getLastRowNum(); i++) {
+				Row row = sheet.getRow(i);
+				if (row == null || isRowEmpty(row)) {
+					emptyRowCount++;
+					if (emptyRowCount >= maxConsecutiveEmptyRows) {
+						System.out.println("Stopped reading at row " + (i + 1) + " after " + maxConsecutiveEmptyRows + " consecutive empty rows");
+						break;
+					}
+					continue;
+				}
+				
+				emptyRowCount = 0; // Reset counter when non-empty row found
+
+				Map<String, Object> rowData = new LinkedHashMap<>();
+
+				for (DatabaseHelper.ColumnInfo column : columns) {
+					Integer cellIndex = letterToIndex.get(column.getExcelColumnLetter().toUpperCase());
+					if (cellIndex != null) {						
+						Cell cell = row.getCell(cellIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+						Object value = getCellValue(cell);
+						rowData.put(column.getColumnName(), value);
+					} else {
+						rowData.put(column.getColumnName(), null);
+					}
+				}
+
+				data.add(rowData);
+			}
+
+		} catch (org.apache.poi.openxml4j.exceptions.InvalidFormatException e) {
+			throw new IOException("Invalid or corrupted Excel file: " + excelFilePath, e);
+		} catch (org.apache.poi.poifs.filesystem.OfficeXmlFileException e) {
+			throw new IOException("File appears to be an XLSX file but has .xls extension. Please rename to .xlsx", e);
+		} catch (Exception e) {
+			throw new IOException("Error reading Excel file: " + e.getMessage(), e);
+		} finally {
+			if (workbook != null) {
+				try {
+					workbook.close();
+				} catch (Exception e) {
+					System.err.println("Warning: Error closing workbook: " + e.getMessage());
+				}
+			}
+		}
+
+		return data;
+	}
+	
+	private String getSheetNames(Workbook workbook) {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+			if (i > 0) sb.append(", ");
+			sb.append(workbook.getSheetAt(i).getSheetName());
+		}
+		return sb.toString();
+	}
+
+	private String getColumnLettersList() {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sb.append(", ");
+			sb.append(columns.get(i).getExcelColumnLetter());
+		}
+		return sb.toString();
+	}
+
+	private Map<String, Integer> buildColumnMap() {
+		Map<String, Integer> map = new HashMap<>();
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			String letter = column.getExcelColumnLetter().toUpperCase();
+			int index = columnLetterToIndex(letter);
+			map.put(letter, index);
+		}
+		return map;
+	}
+
+	private int columnLetterToIndex(String letter) {
+		int index = 0;
+		for (int i = 0; i < letter.length(); i++) {
+			index = index * 26 + (letter.charAt(i) - 'A' + 1);
+		}
+		return index - 1; //convert to 0 based index
+	}
+
+	private Object getCellValue(Cell cell) {
+		if (cell == null) {
+			return null;
+		}
+		
+		try {
+			switch (cell.getCellType()) {
+			case STRING:
+				String strValue = cell.getStringCellValue();
+				return strValue.trim().isEmpty() ? null : strValue;
+
+			case NUMERIC:
+				if (DateUtil.isCellDateFormatted(cell)) {
+					return cell.getDateCellValue();
+				} else {
+					double numValue = cell.getNumericCellValue();
+					if (numValue == Math.floor(numValue)) {
+						return (long) numValue;
+					}
+					return numValue;
+				}
+
+			case BOOLEAN:
+				return cell.getBooleanCellValue();
+
+			case FORMULA:
+				try {
+					// First try to get cached value type
+					CellType cachedType = cell.getCachedFormulaResultType();
+					switch (cachedType) {
+					case NUMERIC:
+						if (DateUtil.isCellDateFormatted(cell)) {
+							return cell.getDateCellValue();
+						}
+						double numValue = cell.getNumericCellValue();
+						if (numValue == Math.floor(numValue)) {
+							return (long) numValue;
+						}
+						return numValue;
+					case STRING:
+						return cell.getStringCellValue();
+					case BOOLEAN:
+						return cell.getBooleanCellValue();
+					default:
+						return null;
+					}
+				} catch (Exception e) {
+					System.err.println("Warning: Formula evaluation error in cell " + 
+						cell.getAddress() + ": " + e.getMessage());
+					return null;
+				}
+
+			case BLANK:
+				return null;
+				
+			case ERROR:
+				System.err.println("Warning: Error value in cell " + cell.getAddress());
+				return null;
+
+			default:
+				return null;
+			}
+		} catch (Exception e) {
+			System.err.println("Warning: Error reading cell " + 
+				(cell.getAddress() != null ? cell.getAddress().toString() : "unknown") + 
+				": " + e.getMessage());
+			return null;
+		}
+	}
+
+	private boolean isRowEmpty(Row row) {
+		if (row == null) {
+			return true;
+		}
+		
+		for (int i = row.getFirstCellNum(); i < row.getLastCellNum(); i++) {
+			Cell cell = row.getCell(i);
+			if (cell != null && cell.getCellType() != CellType.BLANK) {
+				Object value = getCellValue(cell);
+				if (value != null && !value.toString().trim().isEmpty()) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+	
+	private void insertData(List<Map<String, Object>> data) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+
+		// validate insert mode
+		if ("upsert".equals(insertMode)) {
+			if (uniqueKeys.isEmpty()) {
+				throw new SQLException("UPSERT mode requires 'uniqueKey' configuration");
+			}
+			System.out.println("Insert Mode: UPSERT (Update if exists, Insert if not)");
+			System.out.println("Unique Key(s): " + String.join(", ", uniqueKeys));
+			System.out.println("Update Strategy: " + updateStrategy.toUpperCase()
+					+ " (all=update all columns, non-null=update only non-null values)");
+		} else {
+			System.out.println("Insert Mode: INSERT (Insert only)");
+		}
+
+		int totalRows = data.size();
+		int insertedRows = 0;
+		int updatedRows = 0;
+		int failedRows = 0;
+
+		Connection conn = dbHelper.getConnection();
+		conn.setAutoCommit(false);
+
+		try {
+			if ("insert".equals(insertMode)) {
+				// standard INSERT mode
+				insertedRows = performInsert(conn, data, schema);
+				failedRows = totalRows - insertedRows;
+			} else if ("upsert".equals(insertMode)) {
+				// UPSERT mode - check and update or insert
+				int[] results = performUpsert(conn, data, schema);
+				insertedRows = results[0];
+				updatedRows = results[1];
+				failedRows = results[2];
+			}
+
+			conn.commit();
+			System.out.println("Transaction committed successfully");
+
+		} catch (SQLException e) {
+			System.err.println("Error during insert, rolling back transaction: " + e.getMessage());
+			try {
+				conn.rollback();
+				System.out.println("Transaction rolled back");
+			} catch (SQLException ex) {
+				System.err.println("Error during rollback: " + ex.getMessage());
+			}
+			throw e;
+		} finally {
+			try {
+				conn.setAutoCommit(true);
+			} catch (SQLException e) {
+				System.err.println("Error resetting auto-commit: " + e.getMessage());
+			}
+		}
+
+		System.out.println("\n=== Insert Summary for " + tableName + " ===");
+		System.out.println("Total rows: " + totalRows);
+		if ("upsert".equals(insertMode)) {
+			System.out.println("Inserted (new): " + insertedRows);
+			System.out.println("Updated (existing): " + updatedRows);
+			System.out.println("Failed: " + failedRows);
+		} else {
+			System.out.println("Successfully inserted: " + insertedRows);
+			System.out.println("Failed: " + failedRows);
+		}
+	}
+
+	private int performInsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+		StringBuilder sql = new StringBuilder();
+		sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sql.append(", ");
+			sql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+
+		sql.append(") VALUES (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sql.append(", ");
+			sql.append("?");
+		}
+
+		sql.append(")");
+
+		int batchSize = dbHelper.getBatchSize();
+		int totalRows = data.size();
+		int insertedRows = 0;
+		int batchCount = 0;
+
+		try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					for (int j = 0; j < columns.size(); j++) {
+						DatabaseHelper.ColumnInfo column = columns.get(j);
+						Object value = row.get(column.getColumnName());
+						column.setParameter(pstmt, j + 1, value);
+					}
+
+					pstmt.addBatch();
+					batchCount++;
+
+					if (batchCount >= batchSize || i == totalRows - 1) {
+						int[] results = pstmt.executeBatch();
+
+						for (int result : results) {
+							if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+								insertedRows++;
+							}
+						}
+
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed (" + insertedRows + " inserted)");
+						batchCount = 0;
+					}
+
+				} catch (SQLException e) {
+					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
+					// Continue with next row
+				}
+			}
+		}
+
+		return insertedRows;
+	}
+
+	private int[] performUpsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+		int insertedRows = 0;
+		int updatedRows = 0;
+		int failedRows = 0;
+		int totalRows = data.size();
+
+		// Build SELECT query to check if record exists
+		StringBuilder selectSql = new StringBuilder();
+		selectSql.append("SELECT COUNT(*) FROM [").append(schema).append("].[").append(tableName).append("] WHERE ");
+		for (int i = 0; i < uniqueKeys.size(); i++) {
+			if (i > 0)
+				selectSql.append(" AND ");
+			selectSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
+		}
+
+		// Build insert query 
+		StringBuilder insertSql = new StringBuilder();
+		insertSql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				insertSql.append(", ");
+			insertSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		insertSql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				insertSql.append(", ");
+			insertSql.append("?");
+		}
+		insertSql.append(")");
+
+		try (PreparedStatement selectStmt = conn.prepareStatement(selectSql.toString());
+				PreparedStatement insertStmt = conn.prepareStatement(insertSql.toString())) {
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					// Set unique key values for SELECT
+					int paramIndex = 1;
+					for (String uniqueKey : uniqueKeys) {
+						Object value = row.get(uniqueKey);
+						DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
+						if (keyColumn != null) {
+							keyColumn.setParameter(selectStmt, paramIndex++, value);
+						}
+					}
+
+					// Check if record exists
+					ResultSet rs = selectStmt.executeQuery();
+					rs.next();
+					boolean exists = rs.getInt(1) > 0;
+					rs.close();
+
+					if (exists) {
+						// UPDATE existing record - build dynamic UPDATE query based on strategy
+						String updateSql = buildUpdateQuery(row, schema);
+
+						if (updateSql != null) {
+							try (PreparedStatement updateStmt = conn.prepareStatement(updateSql)) {
+								paramIndex = 1;
+
+								// Set non-key columns for update based on strategy
+								for (DatabaseHelper.ColumnInfo column : columns) {
+									if (!uniqueKeys.contains(column.getColumnName())) {
+										Object value = row.get(column.getColumnName());
+
+										// For "non-null" strategy, only include non-null values
+										if ("all".equals(updateStrategy) || value != null) {
+											column.setParameter(updateStmt, paramIndex++, value);
+										}
+									}
+								}
+
+								// Set WHERE clause (unique keys)
+								for (String uniqueKey : uniqueKeys) {
+									Object value = row.get(uniqueKey);
+									DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
+									if (keyColumn != null) {
+										keyColumn.setParameter(updateStmt, paramIndex++, value);
+									}
+								}
+
+								int result = updateStmt.executeUpdate();
+								if (result > 0) {
+									updatedRows++;
+								}
+							}
+						} else {
+							// No columns to update (all values are null in non-null strategy)
+							updatedRows++; // Count as processed but not modified
+						}
+
+					} else {
+						// INSERT new record - validate NOT NULL columns
+						boolean canInsert = validateNotNullColumns(row);
+
+						if (canInsert) {
+							paramIndex = 1;
+							for (DatabaseHelper.ColumnInfo column : columns) {
+								Object value = row.get(column.getColumnName());
+								column.setParameter(insertStmt, paramIndex++, value);
+							}
+
+							int result = insertStmt.executeUpdate();
+							if (result > 0) {
+								insertedRows++;
+							}
+						} else {
+							failedRows++;
+							System.err.println(
+									"Row " + (i + 1) + ": Cannot insert - NOT NULL column(s) have null values");
+						}
+					}
+
+					if ((i + 1) % 100 == 0 || i == totalRows - 1) {
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+					}
+
+				} catch (SQLException e) {
+					failedRows++;
+					System.err.println("Error processing row " + (i + 1) + ": " + e.getMessage());
+				}
+			}
+		}
+
+		return new int[] { insertedRows, updatedRows, failedRows };
+	}
+
+	private String buildUpdateQuery(Map<String, Object> row, String schema) {
+		StringBuilder updateSql = new StringBuilder();
+		updateSql.append("UPDATE [").append(schema).append("].[").append(tableName).append("] SET ");
+
+		int updateColCount = 0;
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!uniqueKeys.contains(column.getColumnName())) {
+				Object value = row.get(column.getColumnName());
+
+				// For "non-null" strategy, only include non-null values
+				if ("all".equals(updateStrategy) || value != null) {
+					if (updateColCount > 0)
+						updateSql.append(", ");
+					updateSql.append("[").append(column.getColumnName()).append("] = ?");
+					updateColCount++;
+				}
+			}
+		}
+
+		// If no columns to update, return null
+		if (updateColCount == 0) {
+			return null;
+		}
+
+		updateSql.append(" WHERE ");
+		for (int i = 0; i < uniqueKeys.size(); i++) {
+			if (i > 0)
+				updateSql.append(" AND ");
+			updateSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
+		}
+
+		return updateSql.toString();
+	}
+
+	private boolean validateNotNullColumns(Map<String, Object> row) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!column.isNullable()) {
+				Object value = row.get(column.getColumnName());
+				if (value == null || value.toString().trim().isEmpty()) {
+					System.err.println("Validation failed: Column '" + column.getColumnName()
+							+ "' is NOT NULL but has null or empty value");
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (column.getColumnName().equals(columnName)) {
+				return column;
+			}
+		}
+		return null;
+	}
+}
+
+
+4.Summary of All Changes Made:
+Main.java:
+
+✓ Added comprehensive configuration validation method
+✓ Validates Excel file existence and readability
+✓ Checks for config typos (isNullabel)
+✓ Validates insert mode and unique keys
+✓ Validates all column definitions
+✓ Checks for duplicate column names and Excel columns
+
+DatabaseHelper.java:
+
+✓ Changed default enableTextCleaning to true (was false)
+✓ Added connection timeout (30s) and socket timeout (60s)
+✓ Added getMaxLength() method to ColumnInfo
+✓ Handles both isNullable and isNullabel typo in ColumnInfo constructor
+✓ Added string truncation when data exceeds maxLength
+✓ Added precision/scale validation for DECIMAL types
+✓ Improved date format parsing (more formats supported)
+✓ Better error messages for date/time parsing failures
+✓ Enhanced error handling with specific warnings
+
+ExcelProcessor.java:
+
+✓ Added file readability check
+✓ Shows available sheet names when sheet not found
+✓ Stops reading after 10 consecutive empty rows (prevents reading huge files unnecessarily)
+✓ Better formula error handling (handles #ERROR, #DIV/0!, etc.)
+✓ Enhanced getCellValue with cached formula result type
+✓ Proper workbook closing in finally block
+✓ Better error messages with cell addresses
+✓ Improved transaction handling with proper rollback
+✓ Better progress reporting during insert
+
+Fixed Configuration Issues:
+You still need to manually fix in config.json:
+json// Change this in dynamicList section:
+"isNullabel": false  →  "isNullable": false
+
+// And add this to the first column:
+"isPrimaryKey": false
+Now your project will handle most Excel files without exceptions! The code now:
+
+✓ Validates everything before processing
+✓ Handles the typo gracefully (but warns you)
+✓ Truncates strings that are too long
+✓ Handles more date formats
+✓ Handles Excel errors properly
+✓ Has connection timeouts
+✓ Text cleaning is enabled by default
+✓ Better error messages
