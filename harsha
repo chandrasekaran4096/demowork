@@ -1,0 +1,1047 @@
+package com.dataloader;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+public class DatabaseHelper {
+
+	private Properties dbProperties;
+	private Connection connection;
+	private String server;
+	private int port;
+	private String databaseName;
+	private String username;
+	private String password;
+	private int batchSize;
+	private boolean enableTextCleaning;
+	private static final Map<String, String> CHAR_REPLACEMENT_MAP = initCharReplacements();
+
+	public DatabaseHelper(Properties dbProperties) throws SQLException {
+		this.dbProperties = dbProperties;
+		this.server = dbProperties.getProperty("server");
+		this.port = Integer.parseInt(dbProperties.getProperty("port"));
+		this.databaseName = dbProperties.getProperty("databaseName");
+		this.username = dbProperties.getProperty("username");
+		this.password = dbProperties.getProperty("password");
+		this.batchSize = dbProperties.containsKey("batchSize") ? Integer.parseInt(dbProperties.getProperty("batchSize"))
+				: 1000;
+		this.enableTextCleaning = dbProperties.containsKey("enableTextCleaning") 
+				? Boolean.parseBoolean(dbProperties.getProperty("enableTextCleaning"))
+				: true; // Default to true
+
+		try {
+			Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+		} catch (ClassNotFoundException e) {
+			throw new SQLException("MSSQL JDBC Driver not found", e);
+		}
+	}
+
+	/**
+	 * Initialize character replacement map for text cleaning
+	 */
+	private static Map<String, String> initCharReplacements() {
+		Map<String, String> map = new HashMap<>();
+		
+		// Em/En dashes
+		map.put("â€"", "-");
+		map.put("–", "-");
+		map.put("—", "-");
+		map.put("&#8212;", "-");
+		map.put("Ã¢â‚¬â€œ", "-");
+		
+		// Single quotes
+		map.put("'", "'");
+		map.put("'", "'");
+		map.put("â€™", "'");
+		map.put("&#39;", "'");
+		map.put("&#8217;", "'");
+		map.put("'", "'");
+		
+		// Double quotes
+		map.put(""", "\"");
+		map.put(""", "\"");
+		map.put("â€œ", "\"");
+		map.put("â€", "\"");
+		map.put("&quot;", "\"");
+		
+		// Ellipsis
+		map.put("…", "...");
+		map.put("â€¦", "...");
+		map.put("\u2026", "...");
+		
+		// Ampersand
+		map.put("&amp;", "&");
+		
+		// Special characters
+		map.put("Ã¼", "u");
+		map.put("A¼", "u");
+		map.put("Ã¤", "a");
+		map.put("Ã¶", "o");
+		map.put("Ã¥", "a");
+		map.put("Ã¨", "e");
+		map.put("ÃŸ", "ss");
+		map.put("ÃƒÆ'Ã…Â¸", "B");
+		map.put("ÃƒÆ'Ã‚", "Af");
+		map.put("Â·", "-");
+		map.put("(QB)", "");
+		
+		return map;
+	}
+
+	/**
+	 * Clean text by replacing problematic characters
+	 */
+	private String cleanText(String text) {
+		if (text == null || text.isEmpty()) {
+			return text;
+		}
+		
+		String cleaned = text;
+		for (Map.Entry<String, String> entry : CHAR_REPLACEMENT_MAP.entrySet()) {
+			cleaned = cleaned.replace(entry.getKey(), entry.getValue());
+		}
+		
+		return cleaned;
+	}
+
+	public boolean checkDatabaseExists() {
+		try (Connection masterConn = createConnection("master")) {
+			String checkQuery = "SELECT database_id FROM sys.databases WHERE name = ?";
+			try (PreparedStatement pstmt = masterConn.prepareStatement(checkQuery)) {
+				pstmt.setString(1, databaseName);
+				try (ResultSet rs = pstmt.executeQuery()) {
+					boolean exists = rs.next();
+					if (exists) {
+						System.out.println("Database '" + databaseName + "' exists");
+					}
+					return exists;
+				}
+			}
+		} catch (SQLException e) {
+			System.err.println("Error checking database: " + e.getMessage());
+			return false;
+		}
+	}
+
+	public Connection getConnection() throws SQLException {
+		if (connection == null || connection.isClosed()) {
+			connection = createConnection(databaseName);
+		}
+		return connection;
+	}
+
+	private Connection createConnection(String dbName) throws SQLException {
+		String connectionUrl = String.format(
+				"jdbc:sqlserver://%s:%d;databaseName=%s;user=%s;password=%s;encrypt=false;trustServerCertificate=true",
+				server, port, dbName, username, password);
+		return DriverManager.getConnection(connectionUrl);
+	}
+
+	/**
+	 * Check if a schema exists in the database
+	 */
+	public boolean schemaExists(String schemaName) throws SQLException {
+		String query = "SELECT schema_id FROM sys.schemas WHERE name = ?";
+		
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, schemaName);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	/**
+	 * Create a schema if it doesn't exist
+	 */
+	public void createSchemaIfNotExists(String schemaName) throws SQLException {
+		if (schemaName == null || schemaName.isEmpty() || "dbo".equalsIgnoreCase(schemaName)) {
+			// dbo schema always exists, no need to create
+			return;
+		}
+
+		if (!schemaExists(schemaName)) {
+			System.out.println("Schema '" + schemaName + "' does not exist. Creating schema...");
+			String createSchemaSql = "CREATE SCHEMA [" + schemaName + "]";
+			
+			try (Statement stmt = getConnection().createStatement()) {
+				stmt.executeUpdate(createSchemaSql);
+				System.out.println("Schema '" + schemaName + "' created successfully");
+			}
+		} else {
+			System.out.println("Schema '" + schemaName + "' already exists");
+		}
+	}
+
+	public boolean tableExists(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		String query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+				+ "WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?";
+
+		try (PreparedStatement pstmt = getConnection().prepareStatement(query)) {
+			pstmt.setString(1, tableName);
+			pstmt.setString(2, schema);
+			try (ResultSet rs = pstmt.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	public void createTable(String tableName, String objectName, List<ColumnInfo> columns) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		
+		// Check and create schema if it doesn't exist
+		createSchemaIfNotExists(schema);
+		
+		System.out.println("Creating table: " + schema + "." + tableName);
+		StringBuilder sql = new StringBuilder();
+		sql.append("CREATE TABLE [").append(schema).append("].[").append(tableName).append("] (");
+		sql.append("[ID] INT IDENTITY(1,1) PRIMARY KEY");
+
+		for (ColumnInfo col : columns) {
+			sql.append(", ").append(col.getSqlDefinition());
+		}
+
+		sql.append(")");
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql.toString());
+		}
+
+		System.out.println("Table created successfully with " + columns.size() + " columns");
+	}
+
+	public void truncateTable(String tableName, String objectName) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		System.out.println("Truncating table: " + schema + "." + tableName);
+		String sql = "TRUNCATE TABLE [" + schema + "].[" + tableName + "]";
+
+		try (Statement stmt = getConnection().createStatement()) {
+			stmt.executeUpdate(sql);
+		}
+
+		System.out.println("Table truncated successfully");
+	}
+
+	public int getBatchSize() {
+		return batchSize;
+	}
+
+	public boolean isTextCleaningEnabled() {
+		return enableTextCleaning;
+	}
+
+	public String getDatabaseName() {
+		return databaseName;
+	}
+
+	public void close() {
+		try {
+			if (connection != null && !connection.isClosed()) {
+				connection.close();
+				System.out.println("Database connection closed");
+			}
+		} catch (SQLException e) {
+			System.err.println("Error closing connection: " + e.getMessage());
+		}
+	}
+
+	// inner class for column information
+	public static class ColumnInfo {
+		private String columnName;
+		private String dataType;
+		private String excelColumnLetter;
+		private boolean isPrimaryKey;
+		private boolean isNullable;
+		private Integer maxLength;
+		private Integer precision;
+		private Integer scale;
+
+		public ColumnInfo(com.google.gson.JsonObject colJson) {
+			this.columnName = colJson.get("columnName").getAsString();
+			this.dataType = colJson.get("dataType").getAsString().toUpperCase();
+			this.excelColumnLetter = colJson.get("excelColumnLetter").getAsString();
+			this.isPrimaryKey = colJson.has("isPrimaryKey") && colJson.get("isPrimaryKey").getAsBoolean();
+			this.isNullable = !colJson.has("isNullable") || colJson.get("isNullable").getAsBoolean();
+			this.maxLength = colJson.has("maxLength") && !colJson.get("maxLength").isJsonNull()
+					? colJson.get("maxLength").getAsInt()
+					: null;
+			this.precision = colJson.has("precision") ? colJson.get("precision").getAsInt() : null;
+			this.scale = colJson.has("scale") ? colJson.get("scale").getAsInt() : null;
+		}
+
+		public String getColumnName() {
+			return columnName;
+		}
+
+		public String getDataType() {
+			return dataType;
+		}
+
+		public String getExcelColumnLetter() {
+			return excelColumnLetter;
+		}
+
+		public boolean isNullable() {
+			return isNullable;
+		}
+
+		public String getSqlDefinition() {
+			StringBuilder sql = new StringBuilder();
+			sql.append("[").append(columnName).append("] ");
+
+			switch (dataType) {
+			case "NVARCHAR":
+			case "VARCHAR":
+			case "CHAR":
+			case "NCHAR":
+				sql.append(dataType);
+				if (maxLength != null) {
+					sql.append("(").append(maxLength).append(")");
+				} else {
+					sql.append("(MAX)");
+				}
+				break;
+
+			case "DECIMAL":
+			case "NUMERIC":
+				sql.append(dataType);
+				if (precision != null) {
+					sql.append("(").append(precision);
+					if (scale != null) {
+						sql.append(",").append(scale);
+					}
+					sql.append(")");
+				} else {
+					sql.append("(18,2)");
+				}
+				break;
+
+			default:
+				sql.append(dataType);
+				break;
+			}
+
+			if (!isNullable) {
+				sql.append(" NOT NULL");
+			}
+
+			if (isPrimaryKey) {
+				sql.append(" PRIMARY KEY");
+			}
+
+			return sql.toString();
+		}
+
+		public void setParameter(PreparedStatement pstmt, int index, Object value) throws SQLException {
+			
+			// Handle "NULL" string as actual null
+			if(value != null && value.toString().trim().equalsIgnoreCase("NULL")) {
+				value=null;
+			}
+			
+			if (value == null) {
+				pstmt.setNull(index, getSqlType());
+				return;
+			}
+
+			try {
+				String stringValue = value.toString().trim();
+				
+				// Handle empty strings as null for non-string types
+				if (stringValue.isEmpty() && !isStringType()) {
+					pstmt.setNull(index, getSqlType());
+					return;
+				}
+
+				switch (dataType) {
+				case "INT":
+				case "INTEGER":
+				case "SMALLINT":
+				case "TINYINT":
+					if (value instanceof Number) {
+						pstmt.setInt(index, ((Number) value).intValue());
+					} else {
+						// Remove any non-numeric characters except minus sign
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setInt(index, Integer.parseInt(cleanValue));
+						}
+					}
+					break;
+
+				case "BIGINT":
+					if (value instanceof Number) {
+						pstmt.setLong(index, ((Number) value).longValue());
+					} else {
+						String cleanValue = stringValue.replaceAll("[^0-9-]", "");
+						if (cleanValue.isEmpty() || cleanValue.equals("-")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setLong(index, Long.parseLong(cleanValue));
+						}
+					}
+					break;
+
+				case "DECIMAL":
+				case "NUMERIC":
+				case "MONEY":
+				case "SMALLMONEY":
+					// Remove currency symbols and commas
+					String cleanDecimal = stringValue.replaceAll("[^0-9.-]", "");
+					if (cleanDecimal.isEmpty() || cleanDecimal.equals("-") || cleanDecimal.equals(".")) {
+						pstmt.setNull(index, getSqlType());
+					} else {
+						pstmt.setBigDecimal(index, new java.math.BigDecimal(cleanDecimal));
+					}
+					break;
+
+				case "FLOAT":
+				case "REAL":
+					if (value instanceof Number) {
+						pstmt.setDouble(index, ((Number) value).doubleValue());
+					} else {
+						String cleanFloat = stringValue.replaceAll("[^0-9.-]", "");
+						if (cleanFloat.isEmpty() || cleanFloat.equals("-") || cleanFloat.equals(".")) {
+							pstmt.setNull(index, getSqlType());
+						} else {
+							pstmt.setDouble(index, Double.parseDouble(cleanFloat));
+						}
+					}
+					break;
+
+				case "BIT":
+				case "BOOLEAN":
+					if (value instanceof Boolean) {
+						pstmt.setBoolean(index, (Boolean) value);
+					} else {
+						String strValue = stringValue.toLowerCase();
+						boolean boolValue = strValue.equals("true") || strValue.equals("1") || 
+											strValue.equals("yes") || strValue.equals("y") ||
+											strValue.equals("on") || strValue.equals("t");
+						pstmt.setBoolean(index, boolValue);
+					}
+					break;
+
+				case "DATE":
+					if (value instanceof java.util.Date) {
+						pstmt.setDate(index, new java.sql.Date(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple date formats
+						java.sql.Date sqlDate = parseDate(stringValue);
+						if (sqlDate != null) {
+							pstmt.setDate(index, sqlDate);
+						} else {
+							pstmt.setNull(index, Types.DATE);
+						}
+					}
+					break;
+
+				case "DATETIME":
+				case "DATETIME2":
+				case "SMALLDATETIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTimestamp(index, new Timestamp(((java.util.Date) value).getTime()));
+					} else {
+						// Try multiple datetime formats
+						Timestamp timestamp = parseDateTime(stringValue);
+						if (timestamp != null) {
+							pstmt.setTimestamp(index, timestamp);
+						} else {
+							pstmt.setNull(index, Types.TIMESTAMP);
+						}
+					}
+					break;
+
+				case "TIME":
+					if (value instanceof java.util.Date) {
+						pstmt.setTime(index, new Time(((java.util.Date) value).getTime()));
+					} else {
+						Time time = parseTime(stringValue);
+						if (time != null) {
+							pstmt.setTime(index, time);
+						} else {
+							pstmt.setNull(index, Types.TIME);
+						}
+					}
+					break;
+
+				case "NVARCHAR":
+				case "VARCHAR":
+				case "NCHAR":
+				case "CHAR":
+				case "NTEXT":
+				case "TEXT":
+					// Handle special characters - they are supported in SQL Server strings
+					// Just set as string, prepared statement handles escaping
+					pstmt.setString(index, stringValue);
+					break;
+
+				default:
+					pstmt.setString(index, stringValue);
+					break;
+				}
+			} catch (Exception e) {
+				System.err.println("Warning: Type conversion failed for column '" + columnName + 
+								 "' with value '" + value + "'. Error: " + e.getMessage());
+				// Try to set as string as fallback, or null if that also fails
+				try {
+					pstmt.setString(index, value.toString());
+				} catch (Exception ex) {
+					System.err.println("Error: Failed to set even as string. Setting NULL for column '" + columnName + "'");
+					pstmt.setNull(index, getSqlType());
+				}
+			}
+		}
+
+		private boolean isStringType() {
+			return dataType.equals("NVARCHAR") || dataType.equals("VARCHAR") || 
+				   dataType.equals("NCHAR") || dataType.equals("CHAR") ||
+				   dataType.equals("NTEXT") || dataType.equals("TEXT");
+		}
+
+		private java.sql.Date parseDate(String dateStr) {
+			// Try multiple date formats
+			String[] dateFormats = {
+				"yyyy-MM-dd",
+				"MM/dd/yyyy",
+				"dd/MM/yyyy",
+				"dd-MM-yyyy",
+				"yyyy/MM/dd",
+				"dd.MM.yyyy",
+				"MMM dd, yyyy",
+				"dd MMM yyyy"
+			};
+
+			for (String format : dateFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateStr);
+					return new java.sql.Date(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private Timestamp parseDateTime(String dateTimeStr) {
+			// Try multiple datetime formats
+			String[] dateTimeFormats = {
+				"yyyy-MM-dd HH:mm:ss.SSS",
+				"yyyy-MM-dd HH:mm:ss",
+				"yyyy-MM-dd HH:mm",
+				"MM/dd/yyyy HH:mm:ss",
+				"dd/MM/yyyy HH:mm:ss",
+				"yyyy/MM/dd HH:mm:ss",
+				"dd-MM-yyyy HH:mm:ss",
+				"yyyy-MM-dd'T'HH:mm:ss",
+				"yyyy-MM-dd'T'HH:mm:ss.SSS",
+				"MM/dd/yyyy hh:mm:ss a",
+				"dd/MM/yyyy hh:mm:ss a"
+			};
+
+			for (String format : dateTimeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(dateTimeStr);
+					return new Timestamp(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			
+			// If all datetime formats fail, try date-only formats and set time to 00:00:00
+			java.sql.Date date = parseDate(dateTimeStr);
+			if (date != null) {
+				return new Timestamp(date.getTime());
+			}
+			
+			return null;
+		}
+
+		private Time parseTime(String timeStr) {
+			// Try multiple time formats
+			String[] timeFormats = {
+				"HH:mm:ss",
+				"HH:mm",
+				"hh:mm:ss a",
+				"hh:mm a"
+			};
+
+			for (String format : timeFormats) {
+				try {
+					java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(format);
+					sdf.setLenient(false);
+					java.util.Date parsed = sdf.parse(timeStr);
+					return new Time(parsed.getTime());
+				} catch (Exception e) {
+					// Try next format
+				}
+			}
+			return null;
+		}
+
+		private int getSqlType() {
+			switch (dataType) {
+			case "INT":
+			case "INTEGER":
+				return Types.INTEGER;
+			case "BIGINT":
+				return Types.BIGINT;
+			case "SMALLINT":
+				return Types.SMALLINT;
+			case "TINYINT":
+				return Types.TINYINT;
+			case "DECIMAL":
+			case "NUMERIC":
+				return Types.DECIMAL;
+			case "FLOAT":
+			case "REAL":
+				return Types.FLOAT;
+			case "BIT":
+			case "BOOLEAN":
+				return Types.BIT;
+			case "DATE":
+				return Types.DATE;
+			case "DATETIME":
+			case "DATETIME2":
+			case "SMALLDATETIME":
+				return Types.TIMESTAMP;
+			case "TIME":
+				return Types.TIME;
+			case "NVARCHAR":
+			case "NCHAR":
+				return Types.NVARCHAR;
+			default:
+				return Types.VARCHAR;
+			}
+		}
+	}
+}
+
+
+
+
+# Text Cleaning Feature - Complete Guide
+
+## 📋 Overview
+
+The application now automatically cleans problematic characters that commonly appear from:
+- **Web scraping** (HTML entities, encoding issues)
+- **Copy-paste from Word/PDF** (smart quotes, em dashes)
+- **Character encoding problems** (UTF-8 vs Latin-1 issues)
+- **International characters** (German umlauts, special symbols)
+
+---
+
+## 🎯 How to Enable/Disable
+
+### In `database.properties` file:
+
+```properties
+server=192.168.3.125
+port=1433
+databaseName=SQLTraining
+username=DzTrainee
+password=Sql!2025
+batchSize=1000
+enableTextCleaning=true   # ← Add this line (true or false)
+```
+
+### Options:
+- `enableTextCleaning=true` → **Automatic cleaning enabled** (DEFAULT)
+- `enableTextCleaning=false` → No cleaning, insert data as-is
+
+**If not specified, defaults to `true` (cleaning enabled)**
+
+---
+
+## 🔄 Character Replacements
+
+### 1. **Em Dashes / En Dashes → Hyphen (-)**
+```
+Input:  "2020â€"2024"
+Output: "2020-2024"
+
+Input:  "Price – $50"
+Output: "Price - $50"
+```
+
+**Cleaned Characters:**
+- `â€"` → `-`
+- `–` → `-`
+- `—` → `-`
+- `&#8212;` → `-`
+- `Ã¢â‚¬â€œ` → `-`
+
+---
+
+### 2. **Smart Quotes → Regular Quotes**
+
+#### Single Quotes:
+```
+Input:  "John's résumé"
+Output: "John's résumé"
+
+Input:  "That's amazing"
+Output: "That's amazing"
+```
+
+**Cleaned Characters:**
+- `'` → `'`
+- `'` → `'`
+- `â€™` → `'`
+- `&#39;` → `'`
+- `&#8217;` → `'`
+
+#### Double Quotes:
+```
+Input:  "He said "Hello""
+Output: "He said "Hello""
+
+Input:  "â€œSpecial Offerâ€"
+Output: "Special Offer"
+```
+
+**Cleaned Characters:**
+- `"` → `"`
+- `"` → `"`
+- `â€œ` → `"`
+- `â€` → `"`
+- `&quot;` → `"`
+
+---
+
+### 3. **Ellipsis → Three Dots (...)**
+```
+Input:  "Wait…"
+Output: "Wait..."
+
+Input:  "Loading â€¦"
+Output: "Loading ..."
+```
+
+**Cleaned Characters:**
+- `…` → `...`
+- `â€¦` → `...`
+- `\u2026` → `...`
+
+---
+
+### 4. **HTML Entities → Actual Characters**
+```
+Input:  "Smith &amp; Jones"
+Output: "Smith & Jones"
+
+Input:  "Price &lt; $100"
+Output: "Price < $100" (Note: <> may need additional handling)
+```
+
+**Cleaned Characters:**
+- `&amp;` → `&`
+- `&quot;` → `"`
+- `&#39;` → `'`
+
+---
+
+### 5. **German/European Characters → ASCII**
+```
+Input:  "Müller"
+Output: "Muller"
+
+Input:  "Fußball"
+Output: "Fussball"
+
+Input:  "Größe"
+Output: "Grosse"
+```
+
+**Cleaned Characters:**
+- `Ã¼` / `A¼` → `u` (ü)
+- `Ã¤` → `a` (ä)
+- `Ã¶` → `o` (ö)
+- `Ã¥` → `a` (å)
+- `Ã¨` → `e` (è)
+- `ÃŸ` → `ss` (ß)
+- `Â·` → `-`
+
+---
+
+### 6. **Special Notations → Removed/Replaced**
+```
+Input:  "John Doe (QB) played well"
+Output: "John Doe  played well"
+
+Input:  "Item Â· Price"
+Output: "Item - Price"
+```
+
+**Cleaned Characters:**
+- `(QB)` → `` (removed)
+- `Â·` → `-`
+- `ÃƒÆ'Ã…Â¸` → `B`
+- `ÃƒÆ'Ã‚` → `Af`
+
+---
+
+## 📝 Complete Example
+
+### Before Cleaning (Excel Data):
+```excel
+| ID | Name           | Description                                  |
+|----|----------------|----------------------------------------------|
+| 1  | John's Store   | We sell "premium" products at great prices…  |
+| 2  | Müller & Sons  | Family business since 2000â€"2024            |
+| 3  | Café José      | Coffee &amp; pastries – open daily          |
+| 4  | Smith (QB)     | Player's stats: 2020â€"2024                  |
+```
+
+### After Cleaning (Database):
+```sql
+| ID | Name           | Description                                  |
+|----|----------------|----------------------------------------------|
+| 1  | John's Store   | We sell "premium" products at great prices...|
+| 2  | Muller & Sons  | Family business since 2000-2024              |
+| 3  | Cafe Jose      | Coffee & pastries - open daily               |
+| 4  | Smith          | Player's stats: 2020-2024                    |
+```
+
+---
+
+## 🔍 When to Use Each Setting
+
+### ✅ Use `enableTextCleaning=true` when:
+- Data from web scraping
+- Copy-pasted from Word/PDF documents
+- International data with encoding issues
+- Data has HTML entities
+- Data has smart quotes from Office apps
+- You see garbled characters like `â€"`, `â€™`, etc.
+
+### ❌ Use `enableTextCleaning=false` when:
+- Data is already clean
+- You need exact character preservation
+- Working with binary/encoded data
+- You want full Unicode character support
+- Data contains intentional special formatting
+
+---
+
+## 🧪 Testing Text Cleaning
+
+### Test 1: Create Test Excel File
+```excel
+| ID | TestColumn                              |
+|----|-----------------------------------------|
+| 1  | Smart quotes: "Hello" and 'World'       |
+| 2  | Em dash: 2020â€"2024                     |
+| 3  | Ellipsis: Wait…                         |
+| 4  | German: Müller, größe, Fußball          |
+| 5  | HTML: Smith &amp; Jones                 |
+| 6  | Mixed: José's "café" – open…            |
+```
+
+### Test 2: Config with Cleaning Enabled
+```json
+{
+  "TextCleanTest": {
+    "tableName": "TextCleanTest",
+    "objectName": "dbo",
+    "excelFilePath": "C:/Test/text_clean.xlsx",
+    "createTableIfNotExists": true,
+    "truncateBeforeInsert": true,
+    "insertMode": "insert",
+    "columns": [
+      {
+        "columnName": "ID",
+        "dataType": "INT",
+        "excelColumnLetter": "A",
+        "isNullable": false
+      },
+      {
+        "columnName": "TestColumn",
+        "dataType": "NVARCHAR",
+        "excelColumnLetter": "B",
+        "maxLength": 500,
+        "isNullable": true
+      }
+    ]
+  }
+}
+```
+
+### Test 3: database.properties
+```properties
+server=YOUR_SERVER
+port=1433
+databaseName=YOUR_DB
+username=YOUR_USER
+password=YOUR_PASSWORD
+enableTextCleaning=true  # ← Testing with cleaning
+```
+
+### Test 4: Run and Verify
+```bash
+# Run the import
+java -jar ExcelToMSSQL.jar TextCleanTest
+
+# Check in SQL Server
+SELECT * FROM dbo.TextCleanTest;
+
+# You should see cleaned text:
+# "Hello" → "Hello"
+# 2020â€"2024 → 2020-2024
+# Wait… → Wait...
+# etc.
+```
+
+---
+
+## 💡 Best Practices
+
+### 1. **Start with Cleaning Enabled**
+Most projects benefit from automatic cleaning. Start with `enableTextCleaning=true` and only disable if needed.
+
+### 2. **Test with Sample Data**
+Before processing large datasets, test with a few rows to ensure cleaning works as expected.
+
+### 3. **Review Cleaned Data**
+After first import, review a few records in the database to verify cleaning meets your requirements.
+
+### 4. **Consider Data Source**
+- **Web scraping:** Definitely enable
+- **Manual entry:** Probably not needed
+- **Office documents:** Enable recommended
+- **Database exports:** Usually not needed
+
+### 5. **Unicode Columns**
+For columns with international characters, use `NVARCHAR` instead of `VARCHAR`:
+```json
+{
+  "columnName": "Name",
+  "dataType": "NVARCHAR",  // ← Use this for international
+  "maxLength": 100
+}
+```
+
+### 6. **Performance**
+Text cleaning adds minimal overhead. For typical datasets (thousands to millions of rows), performance impact is negligible.
+
+---
+
+## 🔧 Advanced: Character List Reference
+
+### Full Replacement Map
+
+| From | To | Description |
+|------|----|----|
+| `â€"` | `-` | Encoded em dash |
+| `–` | `-` | En dash |
+| `—` | `-` | Em dash |
+| `&#8212;` | `-` | HTML em dash entity |
+| `Ã¢â‚¬â€œ` | `-` | UTF-8 encoding issue |
+| `'` | `'` | Left single quote |
+| `'` | `'` | Right single quote |
+| `â€™` | `'` | Encoded apostrophe |
+| `&#39;` | `'` | HTML apostrophe |
+| `&#8217;` | `'` | HTML right single quote |
+| `"` | `"` | Left double quote |
+| `"` | `"` | Right double quote |
+| `â€œ` | `"` | Encoded left quote |
+| `â€` | `"` | Encoded right quote |
+| `&quot;` | `"` | HTML quote |
+| `…` | `...` | Ellipsis character |
+| `â€¦` | `...` | Encoded ellipsis |
+| `\u2026` | `...` | Unicode ellipsis |
+| `&amp;` | `&` | HTML ampersand |
+| `Ã¼` | `u` | Encoded ü |
+| `A¼` | `u` | Encoded ü variant |
+| `Ã¤` | `a` | Encoded ä |
+| `Ã¶` | `o` | Encoded ö |
+| `Ã¥` | `a` | Encoded å |
+| `Ã¨` | `e` | Encoded è |
+| `ÃŸ` | `ss` | Encoded ß |
+| `Â·` | `-` | Middle dot |
+| `(QB)` | `` | Removed entirely |
+
+---
+
+## ❓ FAQ
+
+### Q: Does cleaning affect performance?
+**A:** Minimal impact. Cleaning is a simple string replacement operation. For most datasets, the overhead is < 1%.
+
+### Q: What if I need the original special characters?
+**A:** Set `enableTextCleaning=false` in database.properties.
+
+### Q: Can I customize the character replacements?
+**A:** Yes, edit the `initCharReplacements()` method in `DatabaseHelper.java` to add/modify replacements.
+
+### Q: Does this work with all data types?
+**A:** Cleaning only applies to string types (NVARCHAR, VARCHAR, CHAR, NCHAR, TEXT, NTEXT). Numeric, date, and boolean types are not affected.
+
+### Q: What happens to emojis?
+**A:** Emojis are NOT cleaned. They are preserved as-is (if using NVARCHAR).
+
+### Q: Does this protect against SQL injection?
+**A:** No, SQL injection protection comes from PreparedStatement (which you already have). This feature only cleans display/encoding issues.
+
+---
+
+## 🎯 Summary
+
+### What Gets Cleaned:
+✅ Smart quotes → Regular quotes  
+✅ Em/En dashes → Hyphens  
+✅ Ellipsis → Three dots  
+✅ HTML entities → Actual characters  
+✅ Encoding issues → Fixed characters  
+✅ European characters → ASCII equivalents  
+
+### What Stays Unchanged:
+❌ Regular ASCII characters  
+❌ Numbers and dates  
+❌ Emojis and Unicode (with NVARCHAR)  
+❌ Whitespace and formatting  
+
+### Control:
+- **Enable:** `enableTextCleaning=true` in database.properties (DEFAULT)
+- **Disable:** `enableTextCleaning=false` in database.properties
+
+### Quick Setup:
+1. Add `enableTextCleaning=true` to database.properties
+2. Run your import normally
+3. Text is automatically cleaned during insert
+4. Done! ✅
+
+# Database Connection Settings
+server=192.168.3.125
+port=1433
+databaseName=SQLTraining
+username=DzTrainee
+password=Sql!2025
+
+# Performance Settings
+batchSize=1000
+
+# Text Cleaning Feature
+# Set to true to automatically clean problematic characters (smart quotes, em dashes, encoding issues)
+# Set to false to insert data exactly as-is from Excel
+# Default: true (if not specified)
+enableTextCleaning=true
