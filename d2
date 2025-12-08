@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.openxml4j.opc.OPCPackage;
@@ -42,12 +41,10 @@ public class ExcelProcessor {
 	private String updateStrategy;
 	private List<DatabaseHelper.ColumnInfo> columns;
 	
-	// Large file threshold (50MB)
-	private static final long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024;
+	private static final long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB
 
 	public ExcelProcessor(DatabaseHelper dbHelper, JsonObject tableConfig) {
-		// Increase POI buffer limits for large files
-		IOUtils.setByteArrayMaxOverride(500_000_000); // 500MB
+		IOUtils.setByteArrayMaxOverride(500_000_000); // 500MB buffer
 		
 		this.dbHelper = dbHelper;
 		this.tableConfig = tableConfig;
@@ -104,12 +101,10 @@ public class ExcelProcessor {
 			}
 		}
 	
-		// Check file size and choose processing method
 		long fileSize = excelFile.length();
 		double fileSizeMB = fileSize / (1024.0 * 1024.0);
 		System.out.printf("Excel file size: %.2f MB%n", fileSizeMB);
 		
-		// Read Excel data
 		System.out.println("Reading Excel file: " + excelFilePath);
 		
 		if (fileSize > LARGE_FILE_THRESHOLD && excelFilePath.toLowerCase().endsWith(".xlsx")) {
@@ -142,7 +137,6 @@ public class ExcelProcessor {
 				throw new IllegalArgumentException("Unsupported file format. Use .xlsx or .xls");				
 			}
 
-			// Get sheet
 			Sheet sheet;
 			if (sheetName != null && !sheetName.trim().isEmpty()) {
 				sheet = workbook.getSheet(sheetName);
@@ -159,13 +153,11 @@ public class ExcelProcessor {
 				return data;
 			}
 
-			// Build column letter to index map
 			Map<String, Integer> letterToIndex = buildColumnMap();
 
 			System.out.println("Header row index: " + headerRowIndex + " (this row will be skipped)");
 			System.out.println("Reading data using Excel column letters: " + getColumnLettersList());
 
-			// Read data rows - skip header row
 			int dataStartRow = headerRowIndex + 1;
 			for (int i = dataStartRow; i <= sheet.getLastRowNum(); i++) {
 				Row row = sheet.getRow(i);
@@ -469,110 +461,6 @@ public class ExcelProcessor {
 			if (i > 0) mergeSql.append(", ");
 			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
 		}
-		mergeSql.append(") OUTPUT $action;");
-
-		System.out.println("Using MERGE statement for batch UPSERT operations");
-
-		try (PreparedStatement mergeStmt = conn.prepareStatement(mergeSql.toString())) {
-			int batchCount = 0;
-			int startIndex = 0;
-
-			for (int i = 0; i < totalRows; i++) {
-				Map<String, Object> row = data.get(i);
-
-				try {
-					if (!validateNotNullColumns(row)) {
-						failedRows++;
-						System.err.println("Row " + (i + 1) + ": Skipped - NOT NULL column(s) have null values");
-						continue;
-					}
-
-					for (int j = 0; j < columns.size(); j++) {
-						DatabaseHelper.ColumnInfo column = columns.get(j);
-						Object value = row.get(column.getColumnName());
-						column.setParameter(mergeStmt, j + 1, value);
-					}
-
-					mergeStmt.addBatch();
-					batchCount++;
-
-					if (batchCount >= batchSize || i == totalRows - 1) {
-						try {
-							int[] results = mergeStmt.executeBatch();
-							
-							for (int result : results) {
-								if (result > 0) {
-									insertedRows++; 
-								} else if (result == Statement.EXECUTE_FAILED) {
-									failedRows++;
-								}
-							}
-							
-							batchCount = 0;
-							startIndex = i + 1;
-							
-						} catch (BatchUpdateException bue) {
-							int[] updateCounts = bue.getUpdateCounts();
-							
-							for (int k = 0; k < updateCounts.length; k++) {
-								if (updateCounts[k] > 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
-									insertedRows++;
-								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
-									failedRows++;
-									System.err.println("Row " + (startIndex + k + 1) + " failed: " + data.get(startIndex + k));
-								}
-							}
-							
-							int remainingInBatch = batchCount - updateCounts.length;
-							failedRows += remainingInBatch;
-							
-							System.err.println("Batch execution error at row " + (startIndex + 1) + ": " + bue.getMessage());
-							batchCount = 0;
-							startIndex = i + 1;
-						}
-
-						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
-					}
-
-				} catch (SQLException e) {
-					failedRows++;
-					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
-					if (batchCount > 0) {
-						batchCount--;
-					}
-				}
-			}
-		}
-
-		return new int[] { insertedRows, 0, failedRows };
-	}
-
-	private boolean validateNotNullColumns(Map<String, Object> row) {
-		for (DatabaseHelper.ColumnInfo column : columns) {
-			if (!column.isNullable()) {
-				Object value = row.get(column.getColumnName());
-				if (value == null) {
-					System.err.println("Validation failed: Column '" + column.getColumnName()
-							+ "' is NOT NULL but has null value");
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
-		for (DatabaseHelper.ColumnInfo column : columns) {
-			if (column.getColumnName().equals(columnName)) {
-				return column;
-			}
-		}
-		return null;
-	}
-}for (int i = 0; i < columns.size(); i++) {
-			if (i > 0) mergeSql.append(", ");
-			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
-		}
 		mergeSql.append(");");
 
 		return conn.prepareStatement(mergeSql.toString());
@@ -581,8 +469,7 @@ public class ExcelProcessor {
 	private String getColumnLettersList() {
 		StringBuilder sb = new StringBuilder();
 		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0)
-				sb.append(", ");
+			if (i > 0) sb.append(", ");
 			sb.append(columns.get(i).getExcelColumnLetter());
 		}
 		return sb.toString();
@@ -722,16 +609,14 @@ public class ExcelProcessor {
 		sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
 
 		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0)
-				sql.append(", ");
+			if (i > 0) sql.append(", ");
 			sql.append("[").append(columns.get(i).getColumnName()).append("]");
 		}
 
 		sql.append(") VALUES (");
 
 		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0)
-				sql.append(", ");
+			if (i > 0) sql.append(", ");
 			sql.append("?");
 		}
 
@@ -863,3 +748,6 @@ public class ExcelProcessor {
 			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
 		}
 		mergeSql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
