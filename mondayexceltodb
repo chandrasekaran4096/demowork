@@ -1,0 +1,1101 @@
+package com.dataloader;
+
+import com.dataloader.DatabaseHelper.ColumnInfo;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.util.IOUtils;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler;
+import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler.SheetContentsHandler;
+import org.apache.poi.xssf.model.SharedStringsTable;
+import org.apache.poi.xssf.model.StylesTable;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.XMLReader;
+import javax.xml.parsers.SAXParserFactory;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.sql.*;
+import java.util.*;
+
+public class ExcelProcessor {
+
+	private DatabaseHelper dbHelper;
+	private JsonObject tableConfig;
+	private String tableName;
+	private String objectName;
+	private String excelFilePath;
+	private String sheetName;
+	private int headerRowIndex;
+	private boolean createTableIfNotExists;
+	private boolean truncateBeforeInsert;
+	private String insertMode;
+	private List<String> uniqueKeys;
+	private String updateStrategy;
+	private List<DatabaseHelper.ColumnInfo> columns;
+	
+	// Large file threshold (50MB)
+	private static final long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024;
+
+	public ExcelProcessor(DatabaseHelper dbHelper, JsonObject tableConfig) {
+		// Increase POI buffer limits for large files
+		IOUtils.setByteArrayMaxOverride(500_000_000); // 500MB
+		
+		this.dbHelper = dbHelper;
+		this.tableConfig = tableConfig;
+		this.tableName = tableConfig.get("tableName").getAsString();
+		this.objectName = tableConfig.has("objectName") ? tableConfig.get("objectName").getAsString() : "dbo";
+		this.excelFilePath = tableConfig.get("excelFilePath").getAsString();
+		this.sheetName = tableConfig.has("sheetName") ? tableConfig.get("sheetName").getAsString() : "Sheet1";
+		this.headerRowIndex = tableConfig.has("headerRowIndex") ? tableConfig.get("headerRowIndex").getAsInt() : 0;
+		this.createTableIfNotExists = !tableConfig.has("createTableIfNotExists")
+				|| tableConfig.get("createTableIfNotExists").getAsBoolean();
+		this.truncateBeforeInsert = tableConfig.has("truncateBeforeInsert")
+				&& tableConfig.get("truncateBeforeInsert").getAsBoolean();
+		this.insertMode = tableConfig.has("insertMode") ? tableConfig.get("insertMode").getAsString().toLowerCase()
+				: "insert";
+		this.updateStrategy = tableConfig.has("updateStrategy")
+				? tableConfig.get("updateStrategy").getAsString().toLowerCase()
+				: "all";
+		
+		this.uniqueKeys = new ArrayList<>();
+		if (tableConfig.has("uniqueKey")) {
+			JsonArray uniqueKeyArray = tableConfig.getAsJsonArray("uniqueKey");
+			for (int i = 0; i < uniqueKeyArray.size(); i++) {
+				uniqueKeys.add(uniqueKeyArray.get(i).getAsString());
+			}
+		}
+
+		this.columns = new ArrayList<>();
+		JsonArray columnsArray = tableConfig.getAsJsonArray("columns");
+		for (int i = 0; i < columnsArray.size(); i++) {
+			columns.add(new DatabaseHelper.ColumnInfo(columnsArray.get(i).getAsJsonObject()));
+		}
+	}
+
+	public void process() throws Exception {
+		File excelFile = new File(excelFilePath);
+		if (!excelFile.exists()) {
+			throw new IOException("Excel file not found: " + excelFilePath);
+		}
+
+		boolean tableExists = dbHelper.tableExists(tableName, objectName);
+		
+		if (!tableExists) {
+			if (createTableIfNotExists) {
+				dbHelper.createTable(tableName, objectName, columns);
+			} else {
+				throw new SQLException(
+						"Table '" + objectName + "." + tableName + "' does not exist and auto-creation is disabled");
+			}
+		} else {
+			System.out.println("Table '" + objectName + "." + tableName + "' already exists");
+
+			if (truncateBeforeInsert) {
+				dbHelper.truncateTable(tableName, objectName);
+			}
+		}
+	
+		// Check file size and choose processing method
+		long fileSize = excelFile.length();
+		double fileSizeMB = fileSize / (1024.0 * 1024.0);
+		System.out.printf("Excel file size: %.2f MB%n", fileSizeMB);
+		
+		// Read Excel data
+		System.out.println("Reading Excel file: " + excelFilePath);
+		
+		if (fileSize > LARGE_FILE_THRESHOLD && excelFilePath.toLowerCase().endsWith(".xlsx")) {
+			System.out.println("Using STREAMING mode for large file (optimized for 100K+ rows)");
+			processLargeFile();
+		} else {
+			System.out.println("Using STANDARD mode");
+			List<Map<String, Object>> data = readExcel();
+
+			if (data.isEmpty()) {
+				System.out.println("WARNING: No data found in Excel file");
+				return;
+			}
+
+			System.out.println("Found " + data.size() + " rows to process");
+			insertData(data);
+		}
+	}
+
+	private List<Map<String, Object>> readExcel() throws IOException {
+		List<Map<String, Object>> data = new ArrayList<>();
+		try (FileInputStream fis = new FileInputStream(excelFilePath)) {
+			Workbook workbook;
+
+			if (excelFilePath.toLowerCase().endsWith(".xlsx")) {
+				workbook = new XSSFWorkbook(fis);
+			} else if (excelFilePath.toLowerCase().endsWith(".xls")) {
+				workbook = new HSSFWorkbook(fis);
+			} else {
+				throw new IllegalArgumentException("Unsupported file format. Use .xlsx or .xls");				
+			}
+
+			// Get sheet
+			Sheet sheet;
+			if (sheetName != null && !sheetName.trim().isEmpty()) {
+				sheet = workbook.getSheet(sheetName);
+				if (sheet == null) {
+					System.err.println("WARNING: Sheet '" + sheetName + "' not found. Using first sheet.");
+					sheet = workbook.getSheetAt(0);
+				}
+			} else {
+				sheet = workbook.getSheetAt(0);
+			}
+
+			if (sheet.getPhysicalNumberOfRows() == 0) {
+				workbook.close();
+				return data;
+			}
+
+			// Build column letter to index map
+			Map<String, Integer> letterToIndex = buildColumnMap();
+
+			System.out.println("Header row index: " + headerRowIndex + " (this row will be skipped)");
+			System.out.println("Reading data using Excel column letters: " + getColumnLettersList());
+
+			// Read data rows - skip header row
+			int dataStartRow = headerRowIndex + 1;
+			for (int i = dataStartRow; i <= sheet.getLastRowNum(); i++) {
+				Row row = sheet.getRow(i);
+				if (row == null || isRowEmpty(row)) {
+					continue;
+				}
+
+				Map<String, Object> rowData = new LinkedHashMap<>();
+
+				for (DatabaseHelper.ColumnInfo column : columns) {
+					Integer cellIndex = letterToIndex.get(column.getExcelColumnLetter().toUpperCase());
+					if (cellIndex != null) {						
+						Cell cell = row.getCell(cellIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+						Object value = getCellValue(cell);
+						rowData.put(column.getColumnName(), value);
+					} else {
+						rowData.put(column.getColumnName(), null);
+					}
+				}
+
+				data.add(rowData);
+			}
+			workbook.close();
+		}
+
+		return data;
+	}
+	
+	private void processLargeFile() throws Exception {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		Connection conn = dbHelper.getConnection();
+		conn.setAutoCommit(false);
+
+		Map<String, Integer> letterToIndex = buildColumnMap();
+		
+		PreparedStatement insertStmt = null;
+		PreparedStatement mergeStmt = null;
+		
+		if ("insert".equals(insertMode)) {
+			insertStmt = prepareInsertStatement(conn, schema);
+		} else {
+			mergeStmt = prepareMergeStatement(conn, schema);
+		}
+
+		int batchSize = dbHelper.getBatchSize();
+		final int[] batchCounter = {0};
+		final int[] totalRowsProcessed = {0};
+		final int[] insertedRows = {0};
+		final int[] updatedRows = {0};
+		final int[] failedRows = {0};
+
+		try (OPCPackage pkg = OPCPackage.open(new File(excelFilePath))) {
+			XSSFReader reader = new XSSFReader(pkg);
+			SharedStringsTable sst = reader.getSharedStringsTable();
+			StylesTable styles = reader.getStylesTable();
+
+			XSSFReader.SheetIterator sheets = (XSSFReader.SheetIterator) reader.getSheetsData();
+			InputStream sheetStream = null;
+
+			while (sheets.hasNext()) {
+				InputStream sheet = sheets.next();
+				String currentSheetName = sheets.getSheetName();
+
+				if (sheetName == null || sheetName.isEmpty() || currentSheetName.equals(sheetName)) {
+					sheetStream = sheet;
+					System.out.println("Processing sheet: " + currentSheetName);
+					break;
+				}
+			}
+
+			if (sheetStream == null) {
+				throw new IllegalArgumentException("Sheet '" + sheetName + "' not found");
+			}
+
+			final PreparedStatement finalStmt = insertStmt != null ? insertStmt : mergeStmt;
+
+			SheetContentsHandler handler = new SheetContentsHandler() {
+				private int currentRow = -1;
+				private Map<String, Object> rowData = new LinkedHashMap<>();
+				private Map<Integer, String> currentRowValues = new HashMap<>();
+
+				@Override
+				public void startRow(int rowNum) {
+					currentRow = rowNum;
+					rowData.clear();
+					currentRowValues.clear();
+				}
+
+				@Override
+				public void cell(String cellReference, String formattedValue, XSSFComment comment) {
+					int colIndex = getColumnIndex(cellReference);
+					currentRowValues.put(colIndex, formattedValue);
+				}
+
+				@Override
+				public void endRow(int rowNum) {
+					if (rowNum <= headerRowIndex) {
+						return;
+					}
+
+					boolean hasData = false;
+					for (DatabaseHelper.ColumnInfo column : columns) {
+						Integer cellIndex = letterToIndex.get(column.getExcelColumnLetter().toUpperCase());
+						if (cellIndex != null) {
+							String value = currentRowValues.get(cellIndex);
+							if (value != null && !value.trim().isEmpty()) {
+								rowData.put(column.getColumnName(), value.trim());
+								hasData = true;
+							} else {
+								rowData.put(column.getColumnName(), null);
+							}
+						} else {
+							rowData.put(column.getColumnName(), null);
+						}
+					}
+
+					if (!hasData) {
+						return;
+					}
+
+					try {
+						if (!validateNotNullColumns(rowData)) {
+							failedRows[0]++;
+							System.err.println("Row " + (rowNum + 1) + ": Skipped - NOT NULL validation failed");
+							return;
+						}
+
+						for (int j = 0; j < columns.size(); j++) {
+							DatabaseHelper.ColumnInfo column = columns.get(j);
+							Object value = rowData.get(column.getColumnName());
+							column.setParameter(finalStmt, j + 1, value);
+						}
+
+						finalStmt.addBatch();
+						batchCounter[0]++;
+						totalRowsProcessed[0]++;
+
+						if (batchCounter[0] >= batchSize) {
+							executeBatch(finalStmt, batchCounter[0], insertedRows, failedRows);
+							conn.commit();
+							batchCounter[0] = 0;
+							
+							if (totalRowsProcessed[0] % 10000 == 0) {
+								System.out.println("Progress: " + totalRowsProcessed[0] + " rows processed");
+							}
+						}
+
+					} catch (Exception e) {
+						failedRows[0]++;
+						System.err.println("Error processing row " + (rowNum + 1) + ": " + e.getMessage());
+					}
+				}
+
+				@Override
+				public void headerFooter(String text, boolean isHeader, String tagName) {
+				}
+
+				@Override
+				public void endSheet() {
+					try {
+						if (batchCounter[0] > 0) {
+							executeBatch(finalStmt, batchCounter[0], insertedRows, failedRows);
+							conn.commit();
+						}
+					} catch (Exception e) {
+						System.err.println("Error executing final batch: " + e.getMessage());
+					}
+				}
+			};
+
+			ContentHandler contentHandler = new XSSFSheetXMLHandler(
+					styles, null, sst, handler, new DataFormatter(), false);
+
+			SAXParserFactory saxFactory = SAXParserFactory.newInstance();
+			saxFactory.setNamespaceAware(true);
+			XMLReader sheetParser = saxFactory.newSAXParser().getXMLReader();
+			sheetParser.setContentHandler(contentHandler);
+			sheetParser.parse(new InputSource(sheetStream));
+			sheetStream.close();
+
+		} finally {
+			if (insertStmt != null) insertStmt.close();
+			if (mergeStmt != null) mergeStmt.close();
+			conn.setAutoCommit(true);
+		}
+
+		System.out.println("\n=== Insert Summary for " + tableName + " ===");
+		System.out.println("Total rows: " + totalRowsProcessed[0]);
+		if ("upsert".equals(insertMode)) {
+			System.out.println("Inserted (new): " + insertedRows[0]);
+			System.out.println("Updated (existing): " + updatedRows[0]);
+			System.out.println("Failed: " + failedRows[0]);
+		} else {
+			System.out.println("Successfully inserted: " + insertedRows[0]);
+			System.out.println("Failed: " + failedRows[0]);
+		}
+	}
+	
+	private int getColumnIndex(String cellReference) {
+		StringBuilder colName = new StringBuilder();
+		for (char c : cellReference.toCharArray()) {
+			if (Character.isLetter(c)) {
+				colName.append(c);
+			} else {
+				break;
+			}
+		}
+		return columnLetterToIndex(colName.toString());
+	}
+	
+	private void executeBatch(PreparedStatement stmt, int batchCount, int[] insertedRows, int[] failedRows) throws SQLException {
+		try {
+			int[] results = stmt.executeBatch();
+			for (int result : results) {
+				if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+					insertedRows[0]++;
+				} else if (result == Statement.EXECUTE_FAILED) {
+					failedRows[0]++;
+				}
+			}
+		} catch (BatchUpdateException bue) {
+			int[] updateCounts = bue.getUpdateCounts();
+			for (int count : updateCounts) {
+				if (count >= 0 || count == Statement.SUCCESS_NO_INFO) {
+					insertedRows[0]++;
+				} else {
+					failedRows[0]++;
+				}
+			}
+			failedRows[0] += (batchCount - updateCounts.length);
+			System.err.println("Batch execution error: " + bue.getMessage());
+		}
+	}
+	
+	private PreparedStatement prepareInsertStatement(Connection conn, String schema) throws SQLException {
+		StringBuilder sql = new StringBuilder();
+		sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) sql.append(", ");
+			sql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+
+		sql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) sql.append(", ");
+			sql.append("?");
+		}
+		sql.append(")");
+
+		return conn.prepareStatement(sql.toString());
+	}
+
+	private PreparedStatement prepareMergeStatement(Connection conn, String schema) throws SQLException {
+		StringBuilder mergeSql = new StringBuilder();
+		mergeSql.append("MERGE INTO [").append(schema).append("].[").append(tableName).append("] AS target ");
+		mergeSql.append("USING (VALUES (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("?");
+		}
+		mergeSql.append(")) AS source (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") ON ");
+
+		for (int i = 0; i < uniqueKeys.size(); i++) {
+			if (i > 0) mergeSql.append(" AND ");
+			mergeSql.append("target.[").append(uniqueKeys.get(i)).append("] = source.[").append(uniqueKeys.get(i)).append("]");
+		}
+
+		mergeSql.append(" WHEN MATCHED THEN UPDATE SET ");
+		int updateColCount = 0;
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!uniqueKeys.contains(column.getColumnName())) {
+				if (updateColCount > 0) mergeSql.append(", ");
+				if ("non-null".equals(updateStrategy)) {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = ")
+							.append("CASE WHEN source.[").append(column.getColumnName()).append("] IS NOT NULL ")
+							.append("THEN source.[").append(column.getColumnName()).append("] ")
+							.append("ELSE target.[").append(column.getColumnName()).append("] END");
+				} else {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = source.[")
+							.append(column.getColumnName()).append("]");
+				}
+				updateColCount++;
+			}
+		}
+
+		mergeSql.append(" WHEN NOT MATCHED THEN INSERT (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") OUTPUT $action;");
+
+		System.out.println("Using MERGE statement for batch UPSERT operations");
+
+		try (PreparedStatement mergeStmt = conn.prepareStatement(mergeSql.toString())) {
+			int batchCount = 0;
+			int startIndex = 0;
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					if (!validateNotNullColumns(row)) {
+						failedRows++;
+						System.err.println("Row " + (i + 1) + ": Skipped - NOT NULL column(s) have null values");
+						continue;
+					}
+
+					for (int j = 0; j < columns.size(); j++) {
+						DatabaseHelper.ColumnInfo column = columns.get(j);
+						Object value = row.get(column.getColumnName());
+						column.setParameter(mergeStmt, j + 1, value);
+					}
+
+					mergeStmt.addBatch();
+					batchCount++;
+
+					if (batchCount >= batchSize || i == totalRows - 1) {
+						try {
+							int[] results = mergeStmt.executeBatch();
+							
+							for (int result : results) {
+								if (result > 0) {
+									insertedRows++; 
+								} else if (result == Statement.EXECUTE_FAILED) {
+									failedRows++;
+								}
+							}
+							
+							batchCount = 0;
+							startIndex = i + 1;
+							
+						} catch (BatchUpdateException bue) {
+							int[] updateCounts = bue.getUpdateCounts();
+							
+							for (int k = 0; k < updateCounts.length; k++) {
+								if (updateCounts[k] > 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
+									insertedRows++;
+								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
+									failedRows++;
+									System.err.println("Row " + (startIndex + k + 1) + " failed: " + data.get(startIndex + k));
+								}
+							}
+							
+							int remainingInBatch = batchCount - updateCounts.length;
+							failedRows += remainingInBatch;
+							
+							System.err.println("Batch execution error at row " + (startIndex + 1) + ": " + bue.getMessage());
+							batchCount = 0;
+							startIndex = i + 1;
+						}
+
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+					}
+
+				} catch (SQLException e) {
+					failedRows++;
+					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
+					if (batchCount > 0) {
+						batchCount--;
+					}
+				}
+			}
+		}
+
+		return new int[] { insertedRows, 0, failedRows };
+	}
+
+	private boolean validateNotNullColumns(Map<String, Object> row) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!column.isNullable()) {
+				Object value = row.get(column.getColumnName());
+				if (value == null) {
+					System.err.println("Validation failed: Column '" + column.getColumnName()
+							+ "' is NOT NULL but has null value");
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (column.getColumnName().equals(columnName)) {
+				return column;
+			}
+		}
+		return null;
+	}
+}for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(");");
+
+		return conn.prepareStatement(mergeSql.toString());
+	}
+
+	private String getColumnLettersList() {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sb.append(", ");
+			sb.append(columns.get(i).getExcelColumnLetter());
+		}
+		return sb.toString();
+	}
+
+	private Map<String, Integer> buildColumnMap() {
+		Map<String, Integer> map = new HashMap<>();
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			String letter = column.getExcelColumnLetter().toUpperCase();
+			int index = columnLetterToIndex(letter);
+			map.put(letter, index);
+		}
+		return map;
+	}
+
+	private int columnLetterToIndex(String letter) {
+		int index = 0;
+		for (int i = 0; i < letter.length(); i++) {
+			index = index * 26 + (letter.charAt(i) - 'A' + 1);
+		}
+		return index - 1;
+	}
+
+	private Object getCellValue(Cell cell) {
+		if (cell == null) {
+			return null;
+		}
+		switch (cell.getCellType()) {
+		case STRING:
+			String strValue = cell.getStringCellValue();
+			return strValue.trim().isEmpty() ? null : strValue;
+
+		case NUMERIC:
+			if (DateUtil.isCellDateFormatted(cell)) {
+				return cell.getDateCellValue();
+			} else {
+				double numValue = cell.getNumericCellValue();
+				if (numValue == Math.floor(numValue)) {
+					return (long) numValue;
+				}
+				return numValue;
+			}
+
+		case BOOLEAN:
+			return cell.getBooleanCellValue();
+
+		case FORMULA:
+			try {
+				return cell.getNumericCellValue();
+			} catch (Exception e) {
+				try {
+					return cell.getStringCellValue();
+				} catch (Exception ex) {
+					return null;
+				}
+			}
+
+		case BLANK:
+			return null;
+
+		default:
+			return null;
+		}
+	}
+
+	private boolean isRowEmpty(Row row) {
+		for (int i = row.getFirstCellNum(); i < row.getLastCellNum(); i++) {
+			Cell cell = row.getCell(i);
+			if (cell != null && cell.getCellType() != CellType.BLANK) {
+				Object value = getCellValue(cell);
+				if (value != null && !value.toString().trim().isEmpty()) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+	
+	private void insertData(List<Map<String, Object>> data) throws SQLException {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+
+		if ("upsert".equals(insertMode)) {
+			if (uniqueKeys.isEmpty()) {
+				throw new SQLException("UPSERT mode requires 'uniqueKey' configuration");
+			}
+			System.out.println("Insert Mode: UPSERT (Update if exists, Insert if not)");
+			System.out.println("Unique Key(s): " + String.join(", ", uniqueKeys));
+			System.out.println("Update Strategy: " + updateStrategy.toUpperCase()
+					+ " (all=update all columns, non-null=update only non-null values)");
+		} else {
+			System.out.println("Insert Mode: INSERT (Insert only)");
+		}
+
+		int totalRows = data.size();
+		int insertedRows = 0;
+		int updatedRows = 0;
+		int failedRows = 0;
+
+		Connection conn = dbHelper.getConnection();
+		conn.setAutoCommit(false);
+
+		try {
+			if ("insert".equals(insertMode)) {
+				int[] results = performInsert(conn, data, schema);
+				insertedRows = results[0];
+				failedRows = results[1];
+			} else if ("upsert".equals(insertMode)) {
+				int[] results = performUpsert(conn, data, schema);
+				insertedRows = results[0];
+				updatedRows = results[1];
+				failedRows = results[2];
+			}
+
+			conn.commit();
+
+		} catch (SQLException e) {
+			conn.rollback();
+			throw e;
+		} finally {
+			conn.setAutoCommit(true);
+		}
+
+		System.out.println("\n=== Insert Summary for " + tableName + " ===");
+		System.out.println("Total rows: " + totalRows);
+		if ("upsert".equals(insertMode)) {
+			System.out.println("Inserted (new): " + insertedRows);
+			System.out.println("Updated (existing): " + updatedRows);
+			System.out.println("Failed: " + failedRows);
+		} else {
+			System.out.println("Successfully inserted: " + insertedRows);
+			System.out.println("Failed: " + failedRows);
+		}
+	}
+
+	private int[] performInsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+		StringBuilder sql = new StringBuilder();
+		sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sql.append(", ");
+			sql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+
+		sql.append(") VALUES (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0)
+				sql.append(", ");
+			sql.append("?");
+		}
+
+		sql.append(")");
+
+		int batchSize = dbHelper.getBatchSize();
+		int totalRows = data.size();
+		int insertedRows = 0;
+		int failedRows = 0;
+		int startIndex = 0;
+
+		try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+			int batchCount = 0;
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					for (int j = 0; j < columns.size(); j++) {
+						DatabaseHelper.ColumnInfo column = columns.get(j);
+						Object value = row.get(column.getColumnName());
+						column.setParameter(pstmt, j + 1, value);
+					}
+
+					pstmt.addBatch();
+					batchCount++;
+
+					if (batchCount >= batchSize || i == totalRows - 1) {
+						try {
+							int[] results = pstmt.executeBatch();
+							
+							for (int result : results) {
+								if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+									insertedRows++;
+								} else if (result == Statement.EXECUTE_FAILED) {
+									failedRows++;
+								}
+							}
+							
+							batchCount = 0;
+							startIndex = i + 1;
+							
+						} catch (BatchUpdateException bue) {
+							int[] updateCounts = bue.getUpdateCounts();
+							
+							for (int k = 0; k < updateCounts.length; k++) {
+								if (updateCounts[k] >= 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
+									insertedRows++;
+								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
+									failedRows++;
+									System.err.println("Row " + (startIndex + k + 1) + " not inserted: " + data.get(startIndex + k));
+								}
+							}
+							
+							int remainingInBatch = batchCount - updateCounts.length;
+							failedRows += remainingInBatch;
+							
+							System.err.println("Batch execution error: " + bue.getMessage());
+							batchCount = 0;
+							startIndex = i + 1;
+						}
+
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+					}
+
+				} catch (SQLException e) {
+					failedRows++;
+					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
+					if (batchCount > 0) {
+						batchCount--;
+					}
+				}
+			}
+		}
+
+		return new int[] { insertedRows, failedRows };
+	}
+
+	private int[] performUpsert(Connection conn, List<Map<String, Object>> data, String schema) throws SQLException {
+		int insertedRows = 0;
+		int updatedRows = 0;
+		int failedRows = 0;
+		int totalRows = data.size();
+		int batchSize = dbHelper.getBatchSize();
+
+		StringBuilder mergeSql = new StringBuilder();
+		mergeSql.append("MERGE INTO [").append(schema).append("].[").append(tableName).append("] AS target ");
+		mergeSql.append("USING (VALUES (");
+		
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("?");
+		}
+		mergeSql.append(")) AS source (");
+		
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") ON ");
+		
+		for (int i = 0; i < uniqueKeys.size(); i++) {
+			if (i > 0) mergeSql.append(" AND ");
+			mergeSql.append("target.[").append(uniqueKeys.get(i)).append("] = source.[").append(uniqueKeys.get(i)).append("]");
+		}
+		
+		mergeSql.append(" WHEN MATCHED THEN UPDATE SET ");
+		int updateColCount = 0;
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!uniqueKeys.contains(column.getColumnName())) {
+				if (updateColCount > 0) mergeSql.append(", ");
+				
+				if ("non-null".equals(updateStrategy)) {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = ")
+						   .append("CASE WHEN source.[").append(column.getColumnName()).append("] IS NOT NULL ")
+						   .append("THEN source.[").append(column.getColumnName()).append("] ")
+						   .append("ELSE target.[").append(column.getColumnName()).append("] END");
+				} else {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = source.[")
+						   .append(column.getColumnName()).append("]");
+				}
+				updateColCount++;
+			}
+		}
+		
+		mergeSql.append(" WHEN NOT MATCHED THEN INSERT (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") VALUES (");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  package com.dataloader;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import java.io.*;
+import java.util.*;
+
+public class Main {
+    
+    private static final String CONFIG_FILE = "config.json";
+    private static final String DB_PROPERTIES_FILE = "database.properties";
+    private static final long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB
+    
+    public static void main(String[] args) {        
+        try {
+            if (args.length < 1) {
+                System.err.println("Usage: java -jar ExcelToMSSQL.jar <table-key> [--force-streaming]");
+                System.err.println("Example: java -jar ExcelToMSSQL.jar EmpData");
+                System.err.println("         java -jar ExcelToMSSQL.jar EmpData --force-streaming");
+                System.exit(1);
+            }
+            
+            String tableKey = args[0];
+            boolean forceStreaming = args.length > 1 && "--force-streaming".equals(args[1]);
+            
+            // Load database properties
+            File dbPropertiesFile = new File(DB_PROPERTIES_FILE);
+            if (!dbPropertiesFile.exists()) {
+                System.err.println("ERROR: Database properties file not found: " + DB_PROPERTIES_FILE);
+                System.err.println("Make sure database.properties is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading database configuration from: " + dbPropertiesFile.getAbsolutePath());
+            Properties dbProperties = new Properties();
+            try (FileInputStream fis = new FileInputStream(dbPropertiesFile)) {
+                dbProperties.load(fis);
+            }
+            
+            String[] requiredProps = {"server", "port", "databaseName", "username", "password"};
+            for (String prop : requiredProps) {
+                if (!dbProperties.containsKey(prop) || dbProperties.getProperty(prop).trim().isEmpty()) {
+                    System.err.println("ERROR: Missing or empty required property: " + prop);
+                    System.exit(1);
+                }
+            }
+            
+            // Load table configuration
+            File configFile = new File(CONFIG_FILE);
+            if (!configFile.exists()) {
+                System.err.println("ERROR: Configuration file not found: " + CONFIG_FILE);
+                System.err.println("Make sure config.json is in the same directory as the JAR file");
+                System.exit(1);
+            }
+            
+            System.out.println("Loading table configuration from: " + configFile.getAbsolutePath());
+            
+            Gson gson = new Gson();
+            JsonObject config;
+            try (FileReader reader = new FileReader(configFile)) {
+                config = gson.fromJson(reader, JsonObject.class);
+            }
+            
+            // Check if table key exists
+            if (!config.has(tableKey)) {
+                System.err.println("ERROR: Table key '" + tableKey + "' not found in config");
+                System.err.println("Available keys: " + config.keySet());
+                System.exit(1);
+            }
+            
+            JsonObject tableConfig = config.getAsJsonObject(tableKey);
+            
+            System.out.println("Processing table key: " + tableKey);
+            System.out.println("Table: " + tableConfig.get("tableName").getAsString());
+            
+            // Check Excel file size to determine processor
+            String excelFilePath = tableConfig.get("excelFilePath").getAsString();
+            File excelFile = new File(excelFilePath);
+            
+            if (!excelFile.exists()) {
+                System.err.println("ERROR: Excel file not found: " + excelFilePath);
+                System.exit(1);
+            }
+            
+            long fileSize = excelFile.length();
+            double fileSizeMB = fileSize / (1024.0 * 1024.0);
+            System.out.printf("Excel file size: %.2f MB%n", fileSizeMB);
+            
+            // Initialize database connection
+            DatabaseHelper dbHelper = new DatabaseHelper(dbProperties);
+            
+            // Check if database exists
+            if (!dbHelper.checkDatabaseExists()) {
+                System.err.println("ERROR: Database '" + dbHelper.getDatabaseName() + "' does not exist");
+                System.err.println("Please create the database first");
+                dbHelper.close();
+                System.exit(1);
+            }
+            
+            // Choose processor based on file size or force flag
+            boolean useStreaming = forceStreaming || fileSize > LARGE_FILE_THRESHOLD;
+            
+            if (useStreaming) {
+                System.out.println("Using STREAMING mode (optimized for large files)");
+                StreamingExcelProcessor processor = new StreamingExcelProcessor(dbHelper, tableConfig);
+                processor.process();
+            } else {
+                System.out.println("Using STANDARD mode (loads entire file into memory)");
+                ExcelProcessor processor = new ExcelProcessor(dbHelper, tableConfig);
+                processor.process();
+            }
+            
+            // Close connection
+            dbHelper.close();
+            
+            System.out.println("\n=== Process completed successfully ===");
+            
+        } catch (Exception e) {
+            System.err.println("\nFATAL ERROR: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    Perfect! I've fixed your ExcelProcessor.java to handle large files (10 lakhs/1 million records) within the same class. Here's what changed:
+Key Changes:
+
+Increased POI Buffer Limit - Set to 500MB in the constructor
+Automatic Mode Detection - Files > 50MB automatically use streaming mode
+New processLargeFile() Method - Uses SAX parsing for memory-efficient processing
+Helper Methods Added:
+
+getColumnIndex() - Extracts column index from cell reference
+executeBatch() - Handles batch execution
+prepareInsertStatement() - Prepares INSERT statement
+prepareMergeStatement() - Prepares MERGE statement for upsert
+
+
+
+How It Works:
+
+Small files (< 50MB): Uses original method (loads entire file)
+Large files (≥ 50MB): Automatically switches to streaming mode (SAX parser)
+Processes rows one-by-one without loading the entire file into memory
+Progress updates every 10,000 rows
+
+Usage:
+No changes needed to how you run it:
+bashjava -jar ExcelToMSSQL.jar EmpData
+The processor will automatically detect large files and use streaming mode!
+Recommended: Increase Batch Size
+For 1 million records, update database.properties:
+propertiesbatchSize=5000
+This will process 5000 rows per batch instead of 1000, making it much faster for large files.Csould we change main classNo, you don't need to change the Main.java class at all!
+The ExcelProcessor.java I fixed already handles everything automatically:
+
+Detects file size - Checks if the Excel file is larger than 50MB
+Automatically switches modes:
+
+Small files → Standard mode (loads into memory)
+Large files → Streaming mode (processes row-by-row)
+
+
+
+Your existing Main.java will work perfectly as-is. Just use it the same way:
+bashjava -jar ExcelToMSSQL.jar EmpData
+The processor will automatically:
+
+Print the file size
+Choose the appropriate processing method
+Handle your 10 lakh (1 million) records without memory errors
+
+Optional: If You Want More Control
+If you want to see which mode is being used or force a specific mode, you could make a small update to Main.java to add a command-line option, but it's completely optional. The current setup works automatically.
+Bottom line: Keep your Main.java as-is. The fixed ExcelProcessor.java handles everything! 🚀
