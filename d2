@@ -461,6 +461,108 @@ public class ExcelProcessor {
 			if (i > 0) mergeSql.append(", ");
 			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
 		}
+		mergeSql.append(") OUTPUT $action;");
+
+		System.out.println("Using MERGE statement for batch UPSERT operations");
+
+		try (PreparedStatement mergeStmt = conn.prepareStatement(mergeSql.toString())) {
+			int batchCount = 0;
+			int startIndex = 0;
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					if (!validateNotNullColumns(row)) {
+						failedRows++;
+						System.err.println("Row " + (i + 1) + ": Skipped - NOT NULL column(s) have null values");
+						continue;
+					}
+
+					for (int j = 0; j < columns.size(); j++) {
+						DatabaseHelper.ColumnInfo column = columns.get(j);
+						Object value = row.get(column.getColumnName());
+						column.setParameter(mergeStmt, j + 1, value);
+					}
+
+					mergeStmt.addBatch();
+					batchCount++;
+
+					if (batchCount >= batchSize || i == totalRows - 1) {
+						try {
+							int[] results = mergeStmt.executeBatch();
+							
+							for (int result : results) {
+								if (result > 0) {
+									insertedRows++; 
+								} else if (result == Statement.EXECUTE_FAILED) {
+									failedRows++;
+								}
+							}
+							
+							batchCount = 0;
+							startIndex = i + 1;
+							
+						} catch (BatchUpdateException bue) {
+							int[] updateCounts = bue.getUpdateCounts();
+							
+							for (int k = 0; k < updateCounts.length; k++) {
+								if (updateCounts[k] > 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
+									insertedRows++;
+								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
+									failedRows++;
+									System.err.println("Row " + (startIndex + k + 1) + " failed: " + data.get(startIndex + k));
+								}
+							}
+							
+							int remainingInBatch = batchCount - updateCounts.length;
+							failedRows += remainingInBatch;
+							
+							System.err.println("Batch execution error at row " + (startIndex + 1) + ": " + bue.getMessage());
+							batchCount = 0;
+							startIndex = i + 1;
+						}
+
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+					}
+
+				} catch (SQLException e) {
+					failedRows++;
+					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
+					if (batchCount > 0) {
+						batchCount--;
+					}
+				}
+			}
+		}
+
+		return new int[] { insertedRows, 0, failedRows };
+	}
+
+	private boolean validateNotNullColumns(Map<String, Object> row) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!column.isNullable()) {
+				Object value = row.get(column.getColumnName());
+				if (value == null) {
+					System.err.println("Validation failed: Column '" + column.getColumnName()
+							+ "' is NOT NULL but has null value");
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (column.getColumnName().equals(columnName)) {
+				return column;
+			}
+		}
+		return null;
+	}
+}
+		}
 		mergeSql.append(");");
 
 		return conn.prepareStatement(mergeSql.toString());
