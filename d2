@@ -5,11 +5,24 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.util.IOUtils;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler;
+import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler.SheetContentsHandler;
+import org.apache.poi.xssf.model.SharedStringsTable;
+import org.apache.poi.xssf.model.StylesTable;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.XMLReader;
+import javax.xml.parsers.SAXParserFactory;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.sql.*;
 import java.util.*;
 
@@ -28,8 +41,14 @@ public class ExcelProcessor {
 	private List<String> uniqueKeys;
 	private String updateStrategy;
 	private List<DatabaseHelper.ColumnInfo> columns;
+	
+	// Large file threshold (50MB)
+	private static final long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024;
 
 	public ExcelProcessor(DatabaseHelper dbHelper, JsonObject tableConfig) {
+		// Increase POI buffer limits for large files
+		IOUtils.setByteArrayMaxOverride(500_000_000); // 500MB
+		
 		this.dbHelper = dbHelper;
 		this.tableConfig = tableConfig;
 		this.tableName = tableConfig.get("tableName").getAsString();
@@ -85,19 +104,29 @@ public class ExcelProcessor {
 			}
 		}
 	
+		// Check file size and choose processing method
+		long fileSize = excelFile.length();
+		double fileSizeMB = fileSize / (1024.0 * 1024.0);
+		System.out.printf("Excel file size: %.2f MB%n", fileSizeMB);
+		
 		// Read Excel data
 		System.out.println("Reading Excel file: " + excelFilePath);
-		List<Map<String, Object>> data = readExcel();
+		
+		if (fileSize > LARGE_FILE_THRESHOLD && excelFilePath.toLowerCase().endsWith(".xlsx")) {
+			System.out.println("Using STREAMING mode for large file (optimized for 100K+ rows)");
+			processLargeFile();
+		} else {
+			System.out.println("Using STANDARD mode");
+			List<Map<String, Object>> data = readExcel();
 
-		if (data.isEmpty()) {
-			System.out.println("WARNING: No data found in Excel file");
-			return;
+			if (data.isEmpty()) {
+				System.out.println("WARNING: No data found in Excel file");
+				return;
+			}
+
+			System.out.println("Found " + data.size() + " rows to process");
+			insertData(data);
 		}
-
-		System.out.println("Found " + data.size() + " rows to process");
-
-		// Insert data
-		insertData(data);
 	}
 
 	private List<Map<String, Object>> readExcel() throws IOException {
@@ -163,6 +192,390 @@ public class ExcelProcessor {
 		}
 
 		return data;
+	}
+	
+	private void processLargeFile() throws Exception {
+		String schema = (objectName != null && !objectName.isEmpty()) ? objectName : "dbo";
+		Connection conn = dbHelper.getConnection();
+		conn.setAutoCommit(false);
+
+		Map<String, Integer> letterToIndex = buildColumnMap();
+		
+		PreparedStatement insertStmt = null;
+		PreparedStatement mergeStmt = null;
+		
+		if ("insert".equals(insertMode)) {
+			insertStmt = prepareInsertStatement(conn, schema);
+		} else {
+			mergeStmt = prepareMergeStatement(conn, schema);
+		}
+
+		int batchSize = dbHelper.getBatchSize();
+		final int[] batchCounter = {0};
+		final int[] totalRowsProcessed = {0};
+		final int[] insertedRows = {0};
+		final int[] updatedRows = {0};
+		final int[] failedRows = {0};
+
+		try (OPCPackage pkg = OPCPackage.open(new File(excelFilePath))) {
+			XSSFReader reader = new XSSFReader(pkg);
+			SharedStringsTable sst = reader.getSharedStringsTable();
+			StylesTable styles = reader.getStylesTable();
+
+			XSSFReader.SheetIterator sheets = (XSSFReader.SheetIterator) reader.getSheetsData();
+			InputStream sheetStream = null;
+
+			while (sheets.hasNext()) {
+				InputStream sheet = sheets.next();
+				String currentSheetName = sheets.getSheetName();
+
+				if (sheetName == null || sheetName.isEmpty() || currentSheetName.equals(sheetName)) {
+					sheetStream = sheet;
+					System.out.println("Processing sheet: " + currentSheetName);
+					break;
+				}
+			}
+
+			if (sheetStream == null) {
+				throw new IllegalArgumentException("Sheet '" + sheetName + "' not found");
+			}
+
+			final PreparedStatement finalStmt = insertStmt != null ? insertStmt : mergeStmt;
+
+			SheetContentsHandler handler = new SheetContentsHandler() {
+				private int currentRow = -1;
+				private Map<String, Object> rowData = new LinkedHashMap<>();
+				private Map<Integer, String> currentRowValues = new HashMap<>();
+
+				@Override
+				public void startRow(int rowNum) {
+					currentRow = rowNum;
+					rowData.clear();
+					currentRowValues.clear();
+				}
+
+				@Override
+				public void cell(String cellReference, String formattedValue, XSSFComment comment) {
+					int colIndex = getColumnIndex(cellReference);
+					currentRowValues.put(colIndex, formattedValue);
+				}
+
+				@Override
+				public void endRow(int rowNum) {
+					if (rowNum <= headerRowIndex) {
+						return;
+					}
+
+					boolean hasData = false;
+					for (DatabaseHelper.ColumnInfo column : columns) {
+						Integer cellIndex = letterToIndex.get(column.getExcelColumnLetter().toUpperCase());
+						if (cellIndex != null) {
+							String value = currentRowValues.get(cellIndex);
+							if (value != null && !value.trim().isEmpty()) {
+								rowData.put(column.getColumnName(), value.trim());
+								hasData = true;
+							} else {
+								rowData.put(column.getColumnName(), null);
+							}
+						} else {
+							rowData.put(column.getColumnName(), null);
+						}
+					}
+
+					if (!hasData) {
+						return;
+					}
+
+					try {
+						if (!validateNotNullColumns(rowData)) {
+							failedRows[0]++;
+							System.err.println("Row " + (rowNum + 1) + ": Skipped - NOT NULL validation failed");
+							return;
+						}
+
+						for (int j = 0; j < columns.size(); j++) {
+							DatabaseHelper.ColumnInfo column = columns.get(j);
+							Object value = rowData.get(column.getColumnName());
+							column.setParameter(finalStmt, j + 1, value);
+						}
+
+						finalStmt.addBatch();
+						batchCounter[0]++;
+						totalRowsProcessed[0]++;
+
+						if (batchCounter[0] >= batchSize) {
+							executeBatch(finalStmt, batchCounter[0], insertedRows, failedRows);
+							conn.commit();
+							batchCounter[0] = 0;
+							
+							if (totalRowsProcessed[0] % 10000 == 0) {
+								System.out.println("Progress: " + totalRowsProcessed[0] + " rows processed");
+							}
+						}
+
+					} catch (Exception e) {
+						failedRows[0]++;
+						System.err.println("Error processing row " + (rowNum + 1) + ": " + e.getMessage());
+					}
+				}
+
+				@Override
+				public void headerFooter(String text, boolean isHeader, String tagName) {
+				}
+
+				@Override
+				public void endSheet() {
+					try {
+						if (batchCounter[0] > 0) {
+							executeBatch(finalStmt, batchCounter[0], insertedRows, failedRows);
+							conn.commit();
+						}
+					} catch (Exception e) {
+						System.err.println("Error executing final batch: " + e.getMessage());
+					}
+				}
+			};
+
+			ContentHandler contentHandler = new XSSFSheetXMLHandler(
+					styles, null, sst, handler, new DataFormatter(), false);
+
+			SAXParserFactory saxFactory = SAXParserFactory.newInstance();
+			saxFactory.setNamespaceAware(true);
+			XMLReader sheetParser = saxFactory.newSAXParser().getXMLReader();
+			sheetParser.setContentHandler(contentHandler);
+			sheetParser.parse(new InputSource(sheetStream));
+			sheetStream.close();
+
+		} finally {
+			if (insertStmt != null) insertStmt.close();
+			if (mergeStmt != null) mergeStmt.close();
+			conn.setAutoCommit(true);
+		}
+
+		System.out.println("\n=== Insert Summary for " + tableName + " ===");
+		System.out.println("Total rows: " + totalRowsProcessed[0]);
+		if ("upsert".equals(insertMode)) {
+			System.out.println("Inserted (new): " + insertedRows[0]);
+			System.out.println("Updated (existing): " + updatedRows[0]);
+			System.out.println("Failed: " + failedRows[0]);
+		} else {
+			System.out.println("Successfully inserted: " + insertedRows[0]);
+			System.out.println("Failed: " + failedRows[0]);
+		}
+	}
+	
+	private int getColumnIndex(String cellReference) {
+		StringBuilder colName = new StringBuilder();
+		for (char c : cellReference.toCharArray()) {
+			if (Character.isLetter(c)) {
+				colName.append(c);
+			} else {
+				break;
+			}
+		}
+		return columnLetterToIndex(colName.toString());
+	}
+	
+	private void executeBatch(PreparedStatement stmt, int batchCount, int[] insertedRows, int[] failedRows) throws SQLException {
+		try {
+			int[] results = stmt.executeBatch();
+			for (int result : results) {
+				if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+					insertedRows[0]++;
+				} else if (result == Statement.EXECUTE_FAILED) {
+					failedRows[0]++;
+				}
+			}
+		} catch (BatchUpdateException bue) {
+			int[] updateCounts = bue.getUpdateCounts();
+			for (int count : updateCounts) {
+				if (count >= 0 || count == Statement.SUCCESS_NO_INFO) {
+					insertedRows[0]++;
+				} else {
+					failedRows[0]++;
+				}
+			}
+			failedRows[0] += (batchCount - updateCounts.length);
+			System.err.println("Batch execution error: " + bue.getMessage());
+		}
+	}
+	
+	private PreparedStatement prepareInsertStatement(Connection conn, String schema) throws SQLException {
+		StringBuilder sql = new StringBuilder();
+		sql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) sql.append(", ");
+			sql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+
+		sql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) sql.append(", ");
+			sql.append("?");
+		}
+		sql.append(")");
+
+		return conn.prepareStatement(sql.toString());
+	}
+
+	private PreparedStatement prepareMergeStatement(Connection conn, String schema) throws SQLException {
+		StringBuilder mergeSql = new StringBuilder();
+		mergeSql.append("MERGE INTO [").append(schema).append("].[").append(tableName).append("] AS target ");
+		mergeSql.append("USING (VALUES (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("?");
+		}
+		mergeSql.append(")) AS source (");
+
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") ON ");
+
+		for (int i = 0; i < uniqueKeys.size(); i++) {
+			if (i > 0) mergeSql.append(" AND ");
+			mergeSql.append("target.[").append(uniqueKeys.get(i)).append("] = source.[").append(uniqueKeys.get(i)).append("]");
+		}
+
+		mergeSql.append(" WHEN MATCHED THEN UPDATE SET ");
+		int updateColCount = 0;
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!uniqueKeys.contains(column.getColumnName())) {
+				if (updateColCount > 0) mergeSql.append(", ");
+				if ("non-null".equals(updateStrategy)) {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = ")
+							.append("CASE WHEN source.[").append(column.getColumnName()).append("] IS NOT NULL ")
+							.append("THEN source.[").append(column.getColumnName()).append("] ")
+							.append("ELSE target.[").append(column.getColumnName()).append("] END");
+				} else {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = source.[")
+							.append(column.getColumnName()).append("]");
+				}
+				updateColCount++;
+			}
+		}
+
+		mergeSql.append(" WHEN NOT MATCHED THEN INSERT (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") VALUES (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") OUTPUT $action;");
+
+		System.out.println("Using MERGE statement for batch UPSERT operations");
+
+		try (PreparedStatement mergeStmt = conn.prepareStatement(mergeSql.toString())) {
+			int batchCount = 0;
+			int startIndex = 0;
+
+			for (int i = 0; i < totalRows; i++) {
+				Map<String, Object> row = data.get(i);
+
+				try {
+					if (!validateNotNullColumns(row)) {
+						failedRows++;
+						System.err.println("Row " + (i + 1) + ": Skipped - NOT NULL column(s) have null values");
+						continue;
+					}
+
+					for (int j = 0; j < columns.size(); j++) {
+						DatabaseHelper.ColumnInfo column = columns.get(j);
+						Object value = row.get(column.getColumnName());
+						column.setParameter(mergeStmt, j + 1, value);
+					}
+
+					mergeStmt.addBatch();
+					batchCount++;
+
+					if (batchCount >= batchSize || i == totalRows - 1) {
+						try {
+							int[] results = mergeStmt.executeBatch();
+							
+							for (int result : results) {
+								if (result > 0) {
+									insertedRows++; 
+								} else if (result == Statement.EXECUTE_FAILED) {
+									failedRows++;
+								}
+							}
+							
+							batchCount = 0;
+							startIndex = i + 1;
+							
+						} catch (BatchUpdateException bue) {
+							int[] updateCounts = bue.getUpdateCounts();
+							
+							for (int k = 0; k < updateCounts.length; k++) {
+								if (updateCounts[k] > 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
+									insertedRows++;
+								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
+									failedRows++;
+									System.err.println("Row " + (startIndex + k + 1) + " failed: " + data.get(startIndex + k));
+								}
+							}
+							
+							int remainingInBatch = batchCount - updateCounts.length;
+							failedRows += remainingInBatch;
+							
+							System.err.println("Batch execution error at row " + (startIndex + 1) + ": " + bue.getMessage());
+							batchCount = 0;
+							startIndex = i + 1;
+						}
+
+						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
+					}
+
+				} catch (SQLException e) {
+					failedRows++;
+					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
+					if (batchCount > 0) {
+						batchCount--;
+					}
+				}
+			}
+		}
+
+		return new int[] { insertedRows, 0, failedRows };
+	}
+
+	private boolean validateNotNullColumns(Map<String, Object> row) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (!column.isNullable()) {
+				Object value = row.get(column.getColumnName());
+				if (value == null) {
+					System.err.println("Validation failed: Column '" + column.getColumnName()
+							+ "' is NOT NULL but has null value");
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
+		for (DatabaseHelper.ColumnInfo column : columns) {
+			if (column.getColumnName().equals(columnName)) {
+				return column;
+			}
+		}
+		return null;
+	}
+}for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("source.[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(");");
+
+		return conn.prepareStatement(mergeSql.toString());
 	}
 
 	private String getColumnLettersList() {
@@ -328,6 +741,7 @@ public class ExcelProcessor {
 		int totalRows = data.size();
 		int insertedRows = 0;
 		int failedRows = 0;
+		int startIndex = 0;
 
 		try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
 			int batchCount = 0;
@@ -358,25 +772,26 @@ public class ExcelProcessor {
 							}
 							
 							batchCount = 0;
+							startIndex = i + 1;
 							
 						} catch (BatchUpdateException bue) {
-							// Handle batch failure
 							int[] updateCounts = bue.getUpdateCounts();
 							
-							for (int result : updateCounts) {
-								if (result >= 0 || result == Statement.SUCCESS_NO_INFO) {
+							for (int k = 0; k < updateCounts.length; k++) {
+								if (updateCounts[k] >= 0 || updateCounts[k] == Statement.SUCCESS_NO_INFO) {
 									insertedRows++;
-								} else if (result == Statement.EXECUTE_FAILED) {
+								} else if (updateCounts[k] == Statement.EXECUTE_FAILED) {
 									failedRows++;
+									System.err.println("Row " + (startIndex + k + 1) + " not inserted: " + data.get(startIndex + k));
 								}
 							}
 							
-							// Count remaining rows in failed batch
 							int remainingInBatch = batchCount - updateCounts.length;
 							failedRows += remainingInBatch;
 							
 							System.err.println("Batch execution error: " + bue.getMessage());
 							batchCount = 0;
+							startIndex = i + 1;
 						}
 
 						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
@@ -385,7 +800,9 @@ public class ExcelProcessor {
 				} catch (SQLException e) {
 					failedRows++;
 					System.err.println("Error preparing row " + (i + 1) + ": " + e.getMessage());
-					batchCount--;
+					if (batchCount > 0) {
+						batchCount--;
+					}
 				}
 			}
 		}
@@ -398,172 +815,51 @@ public class ExcelProcessor {
 		int updatedRows = 0;
 		int failedRows = 0;
 		int totalRows = data.size();
+		int batchSize = dbHelper.getBatchSize();
 
-		StringBuilder selectSql = new StringBuilder();
-		selectSql.append("SELECT COUNT(*) FROM [").append(schema).append("].[").append(tableName).append("] WHERE ");
+		StringBuilder mergeSql = new StringBuilder();
+		mergeSql.append("MERGE INTO [").append(schema).append("].[").append(tableName).append("] AS target ");
+		mergeSql.append("USING (VALUES (");
+		
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("?");
+		}
+		mergeSql.append(")) AS source (");
+		
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
+		}
+		mergeSql.append(") ON ");
+		
 		for (int i = 0; i < uniqueKeys.size(); i++) {
-			if (i > 0)
-				selectSql.append(" AND ");
-			selectSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
+			if (i > 0) mergeSql.append(" AND ");
+			mergeSql.append("target.[").append(uniqueKeys.get(i)).append("] = source.[").append(uniqueKeys.get(i)).append("]");
 		}
-
-		StringBuilder insertSql = new StringBuilder();
-		insertSql.append("INSERT INTO [").append(schema).append("].[").append(tableName).append("] (");
-		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0)
-				insertSql.append(", ");
-			insertSql.append("[").append(columns.get(i).getColumnName()).append("]");
-		}
-		insertSql.append(") VALUES (");
-		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0)
-				insertSql.append(", ");
-			insertSql.append("?");
-		}
-		insertSql.append(")");
-
-		try (PreparedStatement selectStmt = conn.prepareStatement(selectSql.toString());
-				PreparedStatement insertStmt = conn.prepareStatement(insertSql.toString())) {
-
-			for (int i = 0; i < totalRows; i++) {
-				Map<String, Object> row = data.get(i);
-
-				try {
-					int paramIndex = 1;
-					for (String uniqueKey : uniqueKeys) {
-						Object value = row.get(uniqueKey);
-						DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
-						if (keyColumn != null) {
-							keyColumn.setParameter(selectStmt, paramIndex++, value);
-						}
-					}
-
-					ResultSet rs = selectStmt.executeQuery();
-					rs.next();
-					boolean exists = rs.getInt(1) > 0;
-					rs.close();
-
-					if (exists) {
-						String updateSql = buildUpdateQuery(row, schema);
-
-						if (updateSql != null) {
-							try (PreparedStatement updateStmt = conn.prepareStatement(updateSql)) {
-								paramIndex = 1;
-
-								for (DatabaseHelper.ColumnInfo column : columns) {
-									if (!uniqueKeys.contains(column.getColumnName())) {
-										Object value = row.get(column.getColumnName());
-
-										if ("all".equals(updateStrategy) || value != null) {
-											column.setParameter(updateStmt, paramIndex++, value);
-										}
-									}
-								}
-
-								for (String uniqueKey : uniqueKeys) {
-									Object value = row.get(uniqueKey);
-									DatabaseHelper.ColumnInfo keyColumn = getColumnByName(uniqueKey);
-									if (keyColumn != null) {
-										keyColumn.setParameter(updateStmt, paramIndex++, value);
-									}
-								}
-
-								int result = updateStmt.executeUpdate();
-								if (result > 0) {
-									updatedRows++;
-								}
-							}
-						} else {
-							updatedRows++;
-						}
-
-					} else {
-						boolean canInsert = validateNotNullColumns(row);
-
-						if (canInsert) {
-							paramIndex = 1;
-							for (DatabaseHelper.ColumnInfo column : columns) {
-								Object value = row.get(column.getColumnName());
-								column.setParameter(insertStmt, paramIndex++, value);
-							}
-
-							int result = insertStmt.executeUpdate();
-							if (result > 0) {
-								insertedRows++;
-							}
-						} else {
-							failedRows++;
-							System.err.println(
-									"Row " + (i + 1) + ": Cannot insert - NOT NULL column(s) have null values");
-						}
-					}
-
-					if ((i + 1) % 100 == 0 || i == totalRows - 1) {
-						System.out.println("Progress: " + (i + 1) + "/" + totalRows + " rows processed");
-					}
-
-				} catch (SQLException e) {
-					failedRows++;
-					System.err.println("Error processing row " + (i + 1) + ": " + e.getMessage());
-				}
-			}
-		}
-
-		return new int[] { insertedRows, updatedRows, failedRows };
-	}
-
-	private String buildUpdateQuery(Map<String, Object> row, String schema) {
-		StringBuilder updateSql = new StringBuilder();
-		updateSql.append("UPDATE [").append(schema).append("].[").append(tableName).append("] SET ");
-
+		
+		mergeSql.append(" WHEN MATCHED THEN UPDATE SET ");
 		int updateColCount = 0;
 		for (DatabaseHelper.ColumnInfo column : columns) {
 			if (!uniqueKeys.contains(column.getColumnName())) {
-				Object value = row.get(column.getColumnName());
-
-				if ("all".equals(updateStrategy) || value != null) {
-					if (updateColCount > 0)
-						updateSql.append(", ");
-					updateSql.append("[").append(column.getColumnName()).append("] = ?");
-					updateColCount++;
+				if (updateColCount > 0) mergeSql.append(", ");
+				
+				if ("non-null".equals(updateStrategy)) {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = ")
+						   .append("CASE WHEN source.[").append(column.getColumnName()).append("] IS NOT NULL ")
+						   .append("THEN source.[").append(column.getColumnName()).append("] ")
+						   .append("ELSE target.[").append(column.getColumnName()).append("] END");
+				} else {
+					mergeSql.append("target.[").append(column.getColumnName()).append("] = source.[")
+						   .append(column.getColumnName()).append("]");
 				}
+				updateColCount++;
 			}
 		}
-
-		if (updateColCount == 0) {
-			return null;
+		
+		mergeSql.append(" WHEN NOT MATCHED THEN INSERT (");
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) mergeSql.append(", ");
+			mergeSql.append("[").append(columns.get(i).getColumnName()).append("]");
 		}
-
-		updateSql.append(" WHERE ");
-		for (int i = 0; i < uniqueKeys.size(); i++) {
-			if (i > 0)
-				updateSql.append(" AND ");
-			updateSql.append("[").append(uniqueKeys.get(i)).append("] = ?");
-		}
-
-		return updateSql.toString();
-	}
-
-	private boolean validateNotNullColumns(Map<String, Object> row) {
-		for (DatabaseHelper.ColumnInfo column : columns) {
-			if (!column.isNullable()) {
-				Object value = row.get(column.getColumnName());
-				if (value == null) {
-					System.err.println("Validation failed: Column '" + column.getColumnName()
-							+ "' is NOT NULL but has null value");
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	private DatabaseHelper.ColumnInfo getColumnByName(String columnName) {
-		for (DatabaseHelper.ColumnInfo column : columns) {
-			if (column.getColumnName().equals(columnName)) {
-				return column;
-			}
-		}
-		return null;
-	}
-}
+		mergeSql.append(") VALUES (");
